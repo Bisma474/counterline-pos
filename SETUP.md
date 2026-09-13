@@ -21,10 +21,11 @@
 ## 2. Create Supabase project
 
 1. Create an organization and a new Supabase project. Choose the production region closest to the store and save the database password in a password manager.
-2. In **Project Settings → API**, copy the Project URL and anonymous key into a local `.env` file based on `.env.example`.
+2. In **Project Settings → API**, copy the Project URL and publishable key into `apps/web/.env.local`, based on `apps/web/.env.example`.
 3. Never add `.env`, the database password, service-role key, or refresh tokens to GitHub.
-4. Do not create tables manually yet. The database migrations and Row Level Security policy must be reviewed and committed together with the API implementation described in `docs/03_sync_architecture.md` and `docs/04_er_diagrams.md`.
-5. For this POS design, the browser accesses a dedicated API for order sync. It should not receive the Supabase service-role key or write directly to order tables.
+4. In the Supabase SQL Editor, run `supabase/migrations/202609130001_auth_and_stores.sql`. It creates the owner/admin onboarding base: profiles, stores, staff roles, invitations, and Row Level Security. Do not create these tables manually in the Table Editor.
+5. Enable email/password authentication in **Authentication → Providers** and set the Site URL to your local development URL while developing.
+6. For this POS design, the browser accesses a dedicated API for order sync. It should not receive the Supabase service-role key or write directly to order tables.
 
 ## 3. Run the web app locally
 
