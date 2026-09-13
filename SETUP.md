@@ -3,7 +3,8 @@
 ## 1. Create the GitHub repository
 
 1. On GitHub, create a private repository named `counterline-pos`. Do not initialize it with a README, `.gitignore`, or license because this workspace already contains those files.
-2. In this folder, run:
+2. The repository root holds shared documentation and project-wide configuration. The React application is in `apps/web`.
+3. In the repository root, run:
 
    ```powershell
    git init
@@ -25,9 +26,10 @@
 4. Do not create tables manually yet. The database migrations and Row Level Security policy must be reviewed and committed together with the API implementation described in `docs/03_sync_architecture.md` and `docs/04_er_diagrams.md`.
 5. For this POS design, the browser accesses a dedicated API for order sync. It should not receive the Supabase service-role key or write directly to order tables.
 
-## 3. Run the shell locally
+## 3. Run the web app locally
 
 ```powershell
+cd apps/web
 npm install
 npm run dev
 ```
@@ -36,7 +38,7 @@ The current routes are `/login`, `/invite`, and `/register`. The sign-in form cu
 
 ## 4. Team contracts
 
-- Build pages as route modules in `src/pages/` and keep shared UI in `src/components/` once those folders are introduced.
+- Build web pages as route modules in `apps/web/src/pages/` and keep shared UI in `apps/web/src/components/` once those folders are introduced.
 - Do not bypass the order repository or write directly to IndexedDB from components.
 - Read `docs/03_sync_architecture.md` before touching sync behavior and `docs/05_product_requirements.md` before implementing checkout math.
 - Keep API contracts in a committed `api/openapi.yaml`; frontend work should use typed mock adapters until endpoints are complete.
