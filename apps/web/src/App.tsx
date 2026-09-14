@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js'
 import { PasswordField } from './components/PasswordField'
 import { isSupabaseConfigured, requireSupabase, supabase } from './lib/supabase'
 
-const products = [['Ceramic Mug', '$18.00', '24 in stock', 'mug'], ['Canvas Tote', '$32.00', '12 in stock', 'tote'], ['Scented Candle', '$28.00', '4 in stock', 'candle'], ['Hand Soap', '$20.00', '18 in stock', 'soap']] as const
+const products = [['Ceramic Mug', '$18.00', '24 in stock', 'mug'], ['Canvas Tote', '$32.00', '12 in stock', 'tote'], ['Scented Candle', '$28.00', '4 in stock', 'candle'], ['Hand Soap', '$20.00', '18 in stock', 'soap'], ['Olive Oil', '$22.00', '14 in stock', 'oil'], ['Tea Blend', '$16.00', '30 in stock', 'tea'], ['Wool Scarf', '$48.00', '5 in stock', 'scarf'], ['T-Shirt', '$36.00', '9 in stock', 'shirt']] as const
 const nav = [['⌂', 'Dashboard', '/dashboard'], ['⌁', 'Sell', '/register'], ['▦', 'Products', '/products'], ['▤', 'Orders', '/orders'], ['♧', 'Customers', '/customers'], ['▥', 'Reports', '/reports'], ['⚙', 'Settings', '/settings']] as const
 function Mark() { return <span aria-hidden="true" className="leaf-mark">⌁</span> }
 function Brand({ dark = false }: { dark?: boolean }) { return <Link className={`brand ${dark ? 'brand-dark' : ''}`} to="/"><Mark />Counterline <small>FOR INDEPENDENT RETAIL</small></Link> }
