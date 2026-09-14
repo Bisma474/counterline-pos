@@ -15,6 +15,7 @@ These rules apply to every contributor, reviewer, automation, and coding agent.
   ```
 
 - Use `feat/` for features, `fix/` for bugs, `docs/` for documentation, and `chore/` for tooling or configuration.
+- Do not use the name `Codex` (in any capitalization) in branch names, file or folder names, pull-request titles or descriptions, or commit messages. Use a project- or task-specific name instead.
 - Push the task branch and open a pull request into `develop`.
 - Only the team lead merges into `develop` or `main`.
 - Merge `develop` into `main` only after the agreed demo flow works and the build passes.
@@ -85,4 +86,3 @@ Coding agents must follow these additional rules:
 - Run the relevant build or test command after changes. Report failures honestly and include the exact command used.
 - Keep commits focused and use conventional messages, for example: `feat(register): add cart quantity controls`.
 - Before handing off, report changed files, validation performed, and any limitations that require another team member’s work.
-
