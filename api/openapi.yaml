@@ -1,0 +1,61 @@
+openapi: 3.1.0
+info:
+  title: Counterline Offline POS API
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:3001
+paths:
+  /health:
+    get:
+      responses:
+        '200': { description: Service is running }
+  /devices/provision:
+    post:
+      summary: Provision a POS installation for an administrator-owned store.
+      responses:
+        '201': { description: Provisioned }
+  /auth/login:
+    post:
+      summary: Unlock a provisioned terminal with an employee PIN.
+      responses:
+        '200': { description: Employee session issued }
+  /auth/refresh:
+    post:
+      summary: Refresh a device session while online.
+      responses:
+        '200': { description: Session refreshed }
+  /sync/push:
+    post:
+      summary: Idempotently submit immutable business operations.
+      responses:
+        '200': { description: Per-operation outcomes }
+  /sync/pull:
+    get:
+      summary: Read store-scoped change-feed pages after a checkpoint.
+      responses:
+        '200': { description: Change-feed page }
+  /sync/snapshot:
+    post:
+      summary: Create a stable bootstrap or recovery snapshot.
+      responses:
+        '201': { description: Snapshot created }
+  /sync/status:
+    get:
+      summary: Read server-side device telemetry.
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Device status }
+  /devices/{id}/orders:
+    get:
+      summary: Restore synced order history for one installation.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Order history }
