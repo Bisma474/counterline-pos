@@ -2,19 +2,21 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { formatCents } from '../../../../packages/domain/src/money'
 import { activeStoreId, loadCatalog } from '../lib/catalog'
-import { posDb, type LocalProduct, type LocalStock } from '../lib/db'
+import { posDb, type LocalCategory, type LocalProduct, type LocalStock } from '../lib/db'
 import { pushPendingOrders } from '../lib/order-sync'
 import { usePosStore } from '../lib/pos-store'
 import { currentAccess } from '../terminal-auth/cache'
 
 export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const [products, setProducts] = useState<LocalProduct[]>([])
+  const [categories, setCategories] = useState<LocalCategory[]>([])
   const [stock, setStock] = useState<Record<string, number>>({})
   const [taxRates, setTaxRates] = useState<Record<string, number>>({})
   const [currency, setCurrency] = useState('USD')
   const [catalogVersion, setCatalogVersion] = useState(1)
   const [storeId, setStoreId] = useState('')
   const [query, setQuery] = useState('')
+  const [categoryId, setCategoryId] = useState('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -42,14 +44,15 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
         const cached = await posDb.store_config.get(id)
         if (cached) setStoreContext(id, cached.name)
         const refresh = async () => {
-          const [config, available, rates, stocks, adjustments] = await Promise.all([
+          const [config, available, cats, rates, stocks, adjustments] = await Promise.all([
             posDb.store_config.get(id), posDb.products.where('store_id').equals(id).toArray(),
-            posDb.tax_rates.where('store_id').equals(id).toArray(),
+            posDb.categories.where('store_id').equals(id).toArray(), posDb.tax_rates.where('store_id').equals(id).toArray(),
             posDb.server_stock.toArray(), posDb.stock_adjustments.toArray(),
           ])
           if (!active) return
           if (config) { setCurrency(config.currency); setCatalogVersion(config.catalog_version); setStoreContext(id, config.name) }
           setProducts(available.filter(product => product.active))
+          setCategories(cats.filter(category => category.active))
           setTaxRates(Object.fromEntries(rates.filter(rate => rate.active).map(rate => [rate.id, rate.rate_bps])))
           const base = Object.fromEntries(stocks.map((row: LocalStock) => [row.product_id, row.current_stock]))
           for (const adjustment of adjustments) base[adjustment.product_id] = (base[adjustment.product_id] ?? 0) + adjustment.delta
@@ -80,8 +83,8 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
     const term = query.trim().toLowerCase()
     const matches = !term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term) ||
       product.barcode?.toLowerCase().includes(term)
-    return matches
-  }), [products, query])
+    return matches && (categoryId === 'all' || product.category_id === categoryId)
+  }), [products, query, categoryId])
   let total = { subtotalCents: 0, taxCents: 0, totalCents: 0 }
   let cartError = ''
   try { total = totals() } catch (reason) { cartError = reason instanceof Error ? reason.message : 'Cart amount is invalid.' }
@@ -90,7 +93,8 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
     <div className="catalog">
       <div className="catalog-tools"><label className="search" htmlFor="catalog-search"><span aria-hidden="true">⌕</span>
         <input id="catalog-search" type="search" placeholder="Search name, SKU or barcode" value={query} onChange={event => setQuery(event.target.value)} /></label>
-      </div>
+      </div><div className="catalog-filter-bar" aria-label="Product categories"><strong>Browse</strong><div className="categories"><button type="button" className={categoryId === 'all' ? 'active' : ''} onClick={() => setCategoryId('all')}>All products</button>
+        {categories.map(category => <button type="button" key={category.id} className={categoryId === category.id ? 'active' : ''} onClick={() => setCategoryId(category.id)}>{category.name}</button>)}</div></div>
       {loading && <p className="screen-note" role="status">Loading saved catalog…</p>}
       {error && <p className="form-notice error" role="alert">{error}</p>}
       {notice && <p className="screen-note" role="status">{notice}</p>}

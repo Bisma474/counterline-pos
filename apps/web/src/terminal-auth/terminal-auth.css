@@ -9,7 +9,7 @@
 
 /* Cashier register shell. This is deliberately separate from owner Settings navigation. */
 .cashier-pos-shell { min-height: 100vh; display: grid; grid-template-columns: 190px minmax(0, 1fr); background: #f6f2ea; color: #17212d; }
-.cashier-pos-sidebar { display: flex; flex-direction: column; padding: 18px 12px; background: radial-gradient(circle at 50% -20%, #263033, #101718 62%); color: #f8fafc; }
+.cashier-pos-sidebar { display: flex; flex-direction: column; padding: 18px 12px; background: linear-gradient(155deg,#14291f,#1c3829); color: #f8fafc; }
 .cashier-pos-brand { display: flex; align-items: center; gap: 8px; margin: 0 7px 32px; color: #fff; font-size: 17px; font-weight: 800; text-decoration: none; }
 .cashier-pos-brand span { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 6px; background: #ec6b24; color: #182124; font-size: 14px; }
 .cashier-pos-sidebar nav { display: grid; gap: 5px; }

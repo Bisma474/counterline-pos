@@ -16,6 +16,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 .register-page { gap: 20px; padding: 18px 6px; }
 .catalog { min-width: 0; }
 .catalog-tools { align-items: center; }
+.catalog-filter-bar { display: flex; align-items: center; gap: 12px; margin-top: 12px; min-width: 0; }
+.catalog-filter-bar > strong { color: #344054; font-size: 12px; white-space: nowrap; }
 .search { min-height: 48px; border-radius: 9px; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
 .categories { overflow-x: auto; padding-bottom: 2px; }
 .categories button { min-height: 34px; border-radius: 7px; background: #fff; color: #475467; }
