@@ -50,6 +50,8 @@ export interface PosStore {
   // Sync status
   syncStatus: SyncStatus
   setSyncStatus: (status: SyncStatus) => void
+  catalogStatus: 'unknown' | 'ready' | 'unavailable'
+  setCatalogStatus: (status: 'unknown' | 'ready' | 'unavailable') => void
 }
 
 // ---------------------------------------------------------------------------
@@ -117,4 +119,6 @@ export const usePosStore = create<PosStore>((set, get) => ({
 
   syncStatus: 'idle',
   setSyncStatus: (status) => set({ syncStatus: status }),
+  catalogStatus: 'unknown',
+  setCatalogStatus: (status) => set({ catalogStatus: status }),
 }))
