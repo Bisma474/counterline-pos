@@ -1,15 +1,18 @@
 {
-  "name": "counterline-terminal-api",
+  "name": "counterline-api",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --env-file=.env --import tsx --watch src/server.ts",
     "build": "tsc",
     "test": "tsx --test src/terminal-auth/*.test.ts",
     "test:integration": "tsx --test test/*.test.ts",
-    "test:browser": "tsx test/browser-check.ts"
+    "test:browser": "tsx test/browser-check.ts",
+    "test:orders": "node --test --import tsx src/routes/orders.test.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "pg": "^8.16.3"
   },

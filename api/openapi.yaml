@@ -166,6 +166,45 @@ paths:
       responses:
         '204': { description: Terminal revoked }
         default: { $ref: '#/components/responses/Error' }
+  /catalog/snapshot:
+    get:
+      operationId: getCatalogSnapshot
+      summary: Load the active store catalog and stock snapshot
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Store-scoped catalog snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, catalog_version, checkpoint, categories, tax_rates, products, stock]
+        default: { $ref: '#/components/responses/Error' }
+  /orders/push:
+    post:
+      operationId: pushOrder
+      summary: Save one immutable order, payment, and stock movement idempotently
+      security: [{ ownerBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation_id, order, items, payment]
+      responses:
+        '200':
+          description: Accepted order or identical replay
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, operation_id, accepted_checkpoint]
+        '409': { description: Operation ID reused with another payload }
+        '422': { description: Rejected validation, totals, or store reference }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     ownerBearer: { type: http, scheme: bearer, bearerFormat: Supabase JWT }
