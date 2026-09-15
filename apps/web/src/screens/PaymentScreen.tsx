@@ -54,7 +54,10 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
       <button type="button" className={method === 'card' ? 'selected' : ''} onClick={() => setMethod('card')}>Card (external)</button>
     </fieldset>
     {method === 'cash' ? <label>Amount received<input type="text" inputMode="decimal" value={received}
-      onChange={event => setReceived(event.target.value)} placeholder="0.00" autoComplete="off" /></label> : <>
+      onChange={event => setReceived(event.target.value)} placeholder="0.00" autoComplete="off" /><span className="quick-tender" aria-label="Quick cash amounts">
+        <button type="button" onClick={() => setReceived((total / 100).toFixed(2))}>Exact amount</button>
+        {[2000, 5000, 10000].map(amount => <button type="button" key={amount} onClick={() => setReceived((amount / 100).toFixed(2))}>{formatCents(amount, currency)}</button>)}
+      </span></label> : <>
       <label>External payment reference (optional)<input type="text" maxLength={120} value={reference} onChange={event => setReference(event.target.value)} /></label>
       <label className="card-confirm"><input type="checkbox" checked={cardConfirmed} onChange={event => setCardConfirmed(event.target.checked)} /> I confirm the external card payment was approved.</label>
     </>}
