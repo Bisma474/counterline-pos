@@ -3,8 +3,10 @@ import { Router } from 'express'
 import { db } from '../db.js'
 import { ApiError, requireStoreMember, sendApiError } from './auth.js'
 import { boundedInteger, calculateLine, MAX_CENTS, sumLines } from '../../../../packages/domain/src/money.js'
+import { requireCashierTerminal } from '../terminal-auth/routes.js'
 
 export const ordersRouter = Router()
+export const terminalOrdersRouter = Router()
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 type JsonRecord = Record<string, unknown>
 function record(value: unknown, name: string): JsonRecord {
@@ -87,10 +89,13 @@ export function validateOperation(raw: unknown) {
       reference: payment.reference === null || payment.reference === undefined ? null : text(payment.reference, 'Card reference', 120) } }
 }
 
-ordersRouter.post('/push', async (req, res) => {
+async function push(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
     const operation = validateOperation(req.body)
-    await requireStoreMember(req, operation.storeId)
+    if (terminal) {
+      const session = await requireCashierTerminal(req, db)
+      if (session.storeId !== operation.storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    } else await requireStoreMember(req, operation.storeId)
     const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex')
     const client = await db.connect()
     try {
@@ -149,4 +154,6 @@ ordersRouter.post('/push', async (req, res) => {
     } catch (reason) { await client.query('rollback'); throw reason }
     finally { client.release() }
   } catch (reason) { sendApiError(res, reason) }
-})
+}
+ordersRouter.post('/push', (req, res) => void push(req, res))
+terminalOrdersRouter.post('/push', (req, res) => void push(req, res, true))

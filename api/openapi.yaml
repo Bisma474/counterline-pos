@@ -12,7 +12,8 @@ info:
     Refresh revalidates an unexpired cashier session; changed/inactive employees lock.
     Provision and refresh return only the active employee credential projection.
     Offline access is limited to seven days; manager approvals to 72 hours.
-    Catalog/bootstrap readiness and checkout are outside this contract.
+    Cashier catalog bootstrap and checkout use the terminal access plus cashier-session
+    cookies. They are scoped to the terminal's store; a caller cannot choose another store.
 servers:
   - url: /api
 security: []
@@ -205,11 +206,39 @@ paths:
         '409': { description: Operation ID reused with another payload }
         '422': { description: Rejected validation, totals, or store reference }
         default: { $ref: '#/components/responses/Error' }
+  /pos/catalog/snapshot:
+    get:
+      operationId: getTerminalCatalogSnapshot
+      summary: Load the provisioned terminal's store catalog and stock snapshot
+      security: [{ deviceAccess: [] }, { cashierSession: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid }, description: Must equal the authenticated terminal store. }
+      responses:
+        '200': { description: Store-scoped catalog snapshot for the unlocked cashier terminal }
+        default: { $ref: '#/components/responses/Error' }
+  /pos/orders/push:
+    post:
+      operationId: pushTerminalOrder
+      summary: Save one cashier-terminal order idempotently
+      security: [{ deviceAccess: [] }, { cashierSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation_id, order, items, payment]
+      responses:
+        '200': { description: Accepted order or identical replay }
+        '401': { description: Terminal or cashier session is missing, expired, revoked, or permission changed }
+        '403': { description: Payload store does not match the terminal store }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     ownerBearer: { type: http, scheme: bearer, bearerFormat: Supabase JWT }
     deviceAccess: { type: apiKey, in: cookie, name: terminal_access }
     deviceRefresh: { type: apiKey, in: cookie, name: terminal_refresh }
+    cashierSession: { type: apiKey, in: cookie, name: terminal_cashier }
   responses:
     Error:
       description: '400 invalid request; 401 invalid credentials/PIN; 403 origin or manager access denied; 404 entity missing in store; 429 lockout; 500 unavailable. HTTP authentication failures must not fall back to cached login.'

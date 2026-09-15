@@ -2,6 +2,7 @@ import { Router, json, type Request, type Response, type NextFunction } from 'ex
 import type { Pool, PoolClient, QueryResultRow } from 'pg'
 import { randomUUID } from 'node:crypto'
 import { digest, fail, HttpError, ITERATIONS, pinValue, string, token, uuid, verifier, verify } from './security.js'
+import { ApiError } from '../routes/auth.js'
 
 export interface TerminalAuthOptions {
   pool: Pool
@@ -18,6 +19,22 @@ function body(req: Request): Record<string, unknown> {
 }
 function cookie(req: Request, name: string) {
   return req.headers.cookie?.split(';').map(part => part.trim()).find(part => part.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''
+}
+export interface CashierTerminalContext { storeId: string; deviceId: string; employeeId: string }
+/** Verifies the two HttpOnly terminal cookies for POS routes. */
+export async function requireCashierTerminal(req: Request, pool: Pool): Promise<CashierTerminalContext> {
+  const access = cookie(req, 'terminal_access'), cashier = cookie(req, 'terminal_cashier')
+  if (!/^[a-f0-9]{64}$/.test(access) || !/^[a-f0-9]{64}$/.test(cashier)) {
+    throw new ApiError(401, 'authentication_required', 'Unlock this terminal before selling.')
+  }
+  const result = await pool.query<CashierTerminalContext>(`select d.store_id "storeId",d.id "deviceId",e.id "employeeId"
+    from public.terminal_device_sessions ds
+    join public.terminal_devices d on d.id=ds.device_id and d.store_id=ds.store_id and d.revoked_at is null
+    join public.terminal_cashier_sessions cs on cs.device_id=d.id and cs.store_id=d.store_id and cs.expires_at>now()
+    join public.terminal_employees e on e.id=cs.employee_id and e.store_id=cs.store_id and e.active and e.permission_version=cs.permission_version
+    where ds.access_hash=$1 and ds.access_expires_at>now() and ds.revoked_at is null and ds.rotated_at is null and cs.token_hash=$2`, [digest(access), digest(cashier)])
+  if (!result.rows[0]) throw new ApiError(401, 'authentication_required', 'Terminal access expired. Unlock the terminal again.')
+  return result.rows[0]
 }
 export function terminalAuthRouter(options: TerminalAuthOptions) {
   const router = Router()

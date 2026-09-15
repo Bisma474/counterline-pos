@@ -1,13 +1,16 @@
 import { Router } from 'express'
 import { db } from '../db.js'
 import { requireStoreMember, sendApiError, ApiError } from './auth.js'
+import { requireCashierTerminal } from '../terminal-auth/routes.js'
 
-export const catalogRouter = Router()
-catalogRouter.get('/snapshot', async (req, res) => {
+async function snapshot(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
     const storeId = String(req.query.store_id ?? '')
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(storeId)) throw new ApiError(400, 'validation_failed', 'A valid store ID is required.')
-    await requireStoreMember(req, storeId)
+    if (terminal) {
+      const session = await requireCashierTerminal(req, db)
+      if (session.storeId !== storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    } else await requireStoreMember(req, storeId)
     const client = await db.connect()
     try {
       await client.query('begin')
@@ -24,4 +27,8 @@ catalogRouter.get('/snapshot', async (req, res) => {
     } catch (reason) { await client.query('rollback'); throw reason }
     finally { client.release() }
   } catch (reason) { sendApiError(res, reason) }
-})
+}
+export const catalogRouter = Router()
+export const terminalCatalogRouter = Router()
+catalogRouter.get('/snapshot', (req, res) => void snapshot(req, res))
+terminalCatalogRouter.get('/snapshot', (req, res) => void snapshot(req, res, true))
