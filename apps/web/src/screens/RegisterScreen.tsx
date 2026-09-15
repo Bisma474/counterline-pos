@@ -5,8 +5,9 @@ import { activeStoreId, loadCatalog } from '../lib/catalog'
 import { posDb, type LocalCategory, type LocalProduct, type LocalStock } from '../lib/db'
 import { pushPendingOrders } from '../lib/order-sync'
 import { usePosStore } from '../lib/pos-store'
+import { currentAccess } from '../terminal-auth/cache'
 
-export function RegisterScreen() {
+export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const [products, setProducts] = useState<LocalProduct[]>([])
   const [categories, setCategories] = useState<LocalCategory[]>([])
   const [stock, setStock] = useState<Record<string, number>>({})
@@ -33,10 +34,13 @@ export function RegisterScreen() {
     let active = true
     async function boot() {
       try {
-        const id = await activeStoreId()
+        const terminalAccess = terminal ? await currentAccess() : undefined
+        const id = terminal ? terminalAccess?.cache.device.store_id : await activeStoreId()
+        if (!id || (terminal && !terminalAccess?.policy.valid)) throw new Error('Unlock this terminal before opening the register.')
         if (!active) return
         setStoreId(id)
         setStoreContext(id, '')
+        if (terminal) await posDb.sync_metadata.put({ key: `receipt_prefix:${id}`, value: terminalAccess!.cache.device.receipt_prefix })
         const cached = await posDb.store_config.get(id)
         if (cached) setStoreContext(id, cached.name)
         const refresh = async () => {
@@ -56,8 +60,8 @@ export function RegisterScreen() {
         }
         await refresh()
         try {
-          await pushPendingOrders(id)
-          const result = await loadCatalog(id)
+          await pushPendingOrders(id, terminal)
+          const result = await loadCatalog(id, terminal)
           if (result === 'updated') await refresh()
           if (!await posDb.products.where('store_id').equals(id).count()) throw new Error('Connect to load this store’s products.')
           setCatalogStatus('ready')
@@ -73,7 +77,7 @@ export function RegisterScreen() {
     }
     void boot()
     return () => { active = false }
-  }, [setStoreContext, setCatalogStatus])
+  }, [setStoreContext, setCatalogStatus, terminal])
 
   const visible = useMemo(() => products.filter(product => {
     const term = query.trim().toLowerCase()
@@ -114,7 +118,7 @@ export function RegisterScreen() {
       <div className="totals"><span>Subtotal <b>{formatCents(total.subtotalCents, currency)}</b></span><span>Tax <b>{formatCents(total.taxCents, currency)}</b></span>
         <strong>Total <b>{formatCents(total.totalCents, currency)}</b></strong></div>
       {cartError && <p className="form-notice error" role="alert">{cartError}</p>}
-      <Link className={`cta ${!cart.length || cartError || !storeId ? 'cta-disabled' : ''}`} to={cart.length && !cartError && storeId ? '/payment' : '/register'}
+      <Link className={`cta ${!cart.length || cartError || !storeId ? 'cta-disabled' : ''}`} to={cart.length && !cartError && storeId ? terminal ? '/pos/payment' : '/payment' : terminal ? '/pos/register' : '/register'}
         aria-disabled={!cart.length || Boolean(cartError) || !storeId}>Proceed to payment <b aria-hidden="true">→</b></Link>
     </aside>
   </section>

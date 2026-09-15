@@ -42,10 +42,11 @@ type Snapshot = {
   stock: { product_id: string; current_stock: number; updated_at: string }[]
 }
 
-export async function loadCatalog(storeId: string): Promise<'updated' | 'cached'> {
+export async function loadCatalog(storeId: string, terminal = false): Promise<'updated' | 'cached'> {
   if (!navigator.onLine) return 'cached'
-  const response = await fetch(`${configuredApiUrl()}/catalog/snapshot?store_id=${encodeURIComponent(storeId)}`, {
-    headers: { Authorization: `Bearer ${await accessToken()}` },
+  const response = await fetch(`${configuredApiUrl()}${terminal ? '/pos/catalog' : '/catalog'}/snapshot?store_id=${encodeURIComponent(storeId)}`, {
+    credentials: terminal ? 'include' : 'same-origin',
+    headers: terminal ? undefined : { Authorization: `Bearer ${await accessToken()}` },
   })
   if (!response.ok) {
     const failure = await response.json().catch(() => null) as { message?: string } | null

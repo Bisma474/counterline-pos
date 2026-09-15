@@ -6,7 +6,7 @@ import { posDb } from '../lib/db'
 import { pushPendingOrders } from '../lib/order-sync'
 import { usePosStore } from '../lib/pos-store'
 
-export function PaymentScreen() {
+export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   const navigate = useNavigate()
   const inProgress = useRef(false)
   const items = usePosStore(state => state.items)
@@ -37,8 +37,8 @@ export function PaymentScreen() {
     try {
       const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null)
       clearCart()
-      void pushPendingOrders(storeId).catch(() => undefined)
-      navigate('/orders', { replace: true, state: { completed: result.receiptNumber } })
+      void pushPendingOrders(storeId, terminal).catch(() => undefined)
+      navigate(terminal ? '/pos/register' : '/orders', { replace: true, state: { completed: result.receiptNumber } })
     } catch (reason) {
       const failure = reason instanceof Error ? reason.message : 'The sale could not be saved.'
       setError(method === 'card' && cardConfirmed
@@ -47,7 +47,7 @@ export function PaymentScreen() {
     }
     finally { inProgress.current = false; setBusy(false) }
   }
-  return <section className="payment-page"><div className="pay-main"><Link to="/register">← Back to sale</Link><p className="kicker">PAYMENT</p>
+  return <section className="payment-page"><div className="pay-main"><Link to={terminal ? '/pos/register' : '/register'}>← Back to sale</Link><p className="kicker">PAYMENT</p>
     <h1>Payment</h1>{!items.length && <p className="form-notice error">Your cart is empty. Add products before taking payment.</p>}
     <fieldset className="methods"><legend>Select payment method</legend>
       <button type="button" className={method === 'cash' ? 'selected' : ''} onClick={() => setMethod('cash')}>Cash</button>
