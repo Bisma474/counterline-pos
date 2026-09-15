@@ -168,6 +168,11 @@ export class CounterlineDatabase extends Dexie {
       sync_metadata: 'key',
       stock_adjustments: '[operation_id+product_id], product_id, operation_id',
     })
+
+    // Keep SKU uniqueness within a store so two store catalogs may reuse the same SKU.
+    this.version(2).stores({
+      products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id',
+    })
   }
 }
 

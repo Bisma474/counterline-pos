@@ -7,6 +7,6 @@ This branch adds `supabase/migrations/202609150001_catalog_checkout_sync.sql`. A
 3. In another terminal, run `cd apps/web`, `npm install`, then `npm run dev`. Open the URL Vite prints, currently `http://127.0.0.1:5173/`. Sign in with an account that has an active `store_memberships` row, then open **Sell**.
 4. To review the flow, search by name, SKU or demo barcode (`2000000000001` through `2000000000008`), add items, adjust quantity, choose cash or deliberately confirm an external card payment, and complete the sale. The local receipt appears under **Orders** immediately. Disconnect before checkout to verify that saving does not wait for the API; reconnect and select **Sync pending orders**.
 
-Run `npm run build` in `apps/web` and `apps/api`, `npm test` in `apps/api`, and `npm test` in `packages/domain` before review.
+Run `npm run build` in `apps/web` and `apps/api`, and `npm test` in `apps/web`, `apps/api`, and `packages/domain` before review.
 
 This branch uses the existing owner Supabase session to authorize the API because terminal provisioning and device credentials are being developed separately. The browser must have a signed-in owner/staff session and an initial catalog download. Production offline authorization, employee PINs, terminal identity, stock pull after arbitrary catalog changes, and receipt printer certification remain integration work. An accepted order is retained locally with its stock adjustment until a snapshot at or beyond its accepted checkpoint replaces the authoritative stock base.
