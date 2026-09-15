@@ -6,3 +6,40 @@
   .invite-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .invite-form .cta { grid-column: 1 / -1; justify-self: start; }
 }
+
+/* Cashier register shell. This is deliberately separate from owner Settings navigation. */
+.cashier-pos-shell { min-height: 100vh; display: grid; grid-template-columns: 190px minmax(0, 1fr); background: #f6f2ea; color: #17212d; }
+.cashier-pos-sidebar { display: flex; flex-direction: column; padding: 18px 12px; background: radial-gradient(circle at 50% -20%, #263033, #101718 62%); color: #f8fafc; }
+.cashier-pos-brand { display: flex; align-items: center; gap: 8px; margin: 0 7px 32px; color: #fff; font-size: 17px; font-weight: 800; text-decoration: none; }
+.cashier-pos-brand span { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 6px; background: #ec6b24; color: #182124; font-size: 14px; }
+.cashier-pos-sidebar nav { display: grid; gap: 5px; }
+.cashier-pos-sidebar nav a, .cashier-nav-muted { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 11px; border-radius: 7px; color: #edf1f0; font-size: 12px; text-decoration: none; }
+.cashier-pos-sidebar nav a.active { background: linear-gradient(90deg, #7d461f, #3e342d); color: #ff8b42; box-shadow: inset 3px 0 #f0782d; }
+.cashier-nav-muted { color: #d8dfdc; opacity: .88; }
+.cashier-pos-sidebar footer { margin-top: auto; padding: 15px 8px 4px; border-top: 1px solid #384346; color: #d3dcda; font-size: 11px; }
+.cashier-pos-sidebar footer small { padding-left: 15px; color: #92a49e; }
+.cashier-online-dot,.cashier-pos-status i,.cashier-online i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #35bd74; }
+.cashier-pos-main { min-width: 0; display: grid; grid-template-rows: 57px minmax(0, 1fr) auto; padding: 0 14px; }
+.cashier-pos-topbar { display: flex; align-items: center; justify-content: flex-end; gap: 20px; border-bottom: 1px solid #e2ddd3; color: #344054; font-size: 11px; }
+.cashier-online { color: #1d8b4c; }
+.cashier-profile { display: grid; padding-left: 14px; border-left: 1px solid #ded8ce; color: #17212d; font-weight: 800; }
+.cashier-profile small { color: #667085; font-weight: 500; }
+.cashier-pos-status { display: flex; gap: 20px; align-items: center; min-height: 33px; padding: 0 8px; margin: 0 6px; border-top: 1px solid #e6e0d7; color: #667085; font-size: 10px; }
+.cashier-pos-status span:first-child { color: #1d8b4c; }
+@media (max-width: 800px) { .cashier-pos-shell { display: block; } .cashier-pos-sidebar { display: none; } .cashier-pos-main { padding: 0 9px; } .cashier-pos-topbar { gap: 9px; overflow: hidden; white-space: nowrap; } .cashier-pos-topbar > span:nth-child(3) { display: none; } .cashier-pos-status { overflow: auto; white-space: nowrap; } }
+
+.team-members { margin-top: 16px; overflow: hidden; border: 1px solid #e5dfd6; border-radius: 14px; background: #fffdf9; }
+.team-members h3 { margin: 0; padding: 15px 18px; border-bottom: 1px solid #ebe7df; font-size: 16px; }
+.team-members ul { list-style: none; margin: 0; padding: 0 18px; }
+.team-members li { display: grid; grid-template-columns: 38px minmax(0,1fr) auto auto; align-items: center; gap: 12px; min-height: 66px; border-bottom: 1px solid #f0ece5; }
+.team-members li:last-child { border-bottom: 0; }
+.team-avatar { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 50%; background: #fff0e2; color: #c95716; font-size: 11px; font-weight: 800; }
+.team-members li > span:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
+.team-members strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.team-members small { color: #667085; font-size: 11px; text-transform: capitalize; }
+.team-role { padding: 4px 9px; border-radius: 999px; background: #fff0e2; color: #c95716; font-size: 10px; font-weight: 700; text-transform: capitalize; }
+.team-role.owner { background: #ece5fa; color: #6941c6; }
+.team-active { color: #208a54; font-size: 11px; white-space: nowrap; }
+.team-active::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #35bd74; }
+.team-empty { padding: 18px; margin: 0; color: #667085; font-size: 13px; }
+@media (max-width: 620px) { .team-members ul { padding: 0 14px; } .team-members li { grid-template-columns: 36px minmax(0,1fr) auto; gap: 9px; } .team-active { display: none; } }
