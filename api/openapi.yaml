@@ -1,0 +1,82 @@
+openapi: 3.1.0
+info:
+  title: Counterline catalog and order MVP
+  version: 1.0.0
+  description: Owner-session authenticated MVP endpoints. Provisioned device auth replaces this pilot boundary later.
+servers:
+  - url: http://localhost:3001
+security:
+  - ownerSession: []
+components:
+  securitySchemes:
+    ownerSession:
+      type: http
+      scheme: bearer
+      bearerFormat: Supabase access token
+  schemas:
+    MoneyCents:
+      type: integer
+      minimum: 0
+      maximum: 1000000000
+    PushResult:
+      type: object
+      required: [status, operation_id, accepted_checkpoint]
+      properties:
+        status: { type: string, const: accepted }
+        operation_id: { type: string, format: uuid }
+        accepted_checkpoint: { type: string, pattern: '^[0-9]+$' }
+paths:
+  /catalog/snapshot:
+    get:
+      operationId: getCatalogSnapshot
+      summary: Load a store catalog and stock projection at a commit-safe checkpoint
+      parameters:
+        - name: store_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Store-scoped catalog snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, catalog_version, checkpoint, categories, tax_rates, products, stock]
+                properties:
+                  store: { type: object }
+                  catalog_version: { type: integer }
+                  checkpoint: { type: string, pattern: '^[0-9]+$' }
+                  categories: { type: array, items: { type: object } }
+                  tax_rates: { type: array, items: { type: object } }
+                  products: { type: array, items: { type: object } }
+                  stock: { type: array, items: { type: object } }
+        '401': { description: Session invalid }
+        '403': { description: Store membership missing }
+  /orders/push:
+    post:
+      operationId: pushOrder
+      summary: Save one immutable sale, payment and stock movement idempotently
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation_id, order, items, payment]
+              properties:
+                operation_id: { type: string, format: uuid }
+                order: { type: object }
+                items: { type: array, minItems: 1, maxItems: 100, items: { type: object } }
+                payment: { type: object }
+      responses:
+        '200':
+          description: Accepted sale or identical replay
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushResult' }
+        '401': { description: Session invalid; sale remains locally pending }
+        '403': { description: Store membership missing }
+        '409': { description: Operation ID reused with another payload }
+        '422': { description: Rejected validation, totals or store reference }
+        '503': { description: Transient database or API failure }
