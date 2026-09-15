@@ -29,9 +29,9 @@ export function sendApiError(res: import('express').Response, reason: unknown) {
     console.error(reason)
     const code = typeof reason === 'object' && reason !== null && 'code' in reason ? String(reason.code) : ''
     if (['ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNREFUSED', 'ENETUNREACH'].includes(code)) {
-      res.status(503).json({ code: 'database_unreachable', message: 'Catalog database is unreachable. Ask your administrator to check the API database connection.' })
+      res.status(503).json({ code: 'database_unreachable', message: 'Store database is unreachable. Ask your administrator to check the API database connection.' })
     } else if (code === '42P01') {
-      res.status(503).json({ code: 'catalog_not_initialized', message: 'Catalog data is not initialized. Ask your administrator to apply the catalog migration.' })
+      res.status(503).json({ code: 'pos_not_initialized', message: 'POS data is not initialized. Ask your administrator to apply the catalog migration.' })
     } else {
       res.status(503).json({ code: 'server_unavailable', message: 'The API could not complete this request.' })
     }
