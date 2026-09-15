@@ -37,9 +37,14 @@ export function PaymentScreen() {
     try {
       const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null)
       clearCart()
-      void pushPendingOrders().catch(() => undefined)
+      void pushPendingOrders(storeId).catch(() => undefined)
       navigate('/orders', { replace: true, state: { completed: result.receiptNumber } })
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'The sale could not be saved. No receipt was issued.') }
+    } catch (reason) {
+      const failure = reason instanceof Error ? reason.message : 'The sale could not be saved.'
+      setError(method === 'card' && cardConfirmed
+        ? `${failure} The external card payment may have been approved. Record reference ${reference.trim() || '(none entered)'} and reconcile it before charging again.`
+        : `${failure} No receipt was issued.`)
+    }
     finally { inProgress.current = false; setBusy(false) }
   }
   return <section className="payment-page"><div className="pay-main"><Link to="/register">← Back to sale</Link><p className="kicker">PAYMENT</p>

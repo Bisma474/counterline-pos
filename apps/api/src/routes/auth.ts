@@ -32,6 +32,10 @@ export function sendApiError(res: import('express').Response, reason: unknown) {
       res.status(503).json({ code: 'database_unreachable', message: 'Store database is unreachable. Ask your administrator to check the API database connection.' })
     } else if (code === '42P01') {
       res.status(503).json({ code: 'pos_not_initialized', message: 'POS data is not initialized. Ask your administrator to apply the catalog migration.' })
+    } else if (code === '23505') {
+      res.status(409).json({ status: 'rejected', code: 'receipt_number_conflict', message: 'A sale already uses this receipt or payment identity. Keep this paid sale for reconciliation.' })
+    } else if (['23503', '23514', '22003'].includes(code)) {
+      res.status(422).json({ status: 'rejected', code: 'validation_failed', message: 'The sale references invalid catalog data or exceeds database limits. Keep it for reconciliation.' })
     } else {
       res.status(503).json({ code: 'server_unavailable', message: 'The API could not complete this request.' })
     }

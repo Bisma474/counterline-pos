@@ -13,6 +13,7 @@ import { calculateLine, sumLines } from '../../../../packages/domain/src/money'
 // ---------------------------------------------------------------------------
 
 export interface CartItem {
+  storeId: string
   productId: string
   name: string
   sku: string
@@ -61,7 +62,10 @@ export interface PosStore {
 export const usePosStore = create<PosStore>((set, get) => ({
   storeId: '',
   storeName: '',
-  setStoreContext: (storeId, storeName) => set({ storeId, storeName }),
+  setStoreContext: (storeId, storeName) => set(state => ({
+    storeId, storeName,
+    items: state.storeId && state.storeId !== storeId ? [] : state.items,
+  })),
 
   items: [],
 

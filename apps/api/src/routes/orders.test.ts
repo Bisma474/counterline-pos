@@ -50,3 +50,18 @@ test('rejects cross-operation identity and fractional money', () => {
   fractional.payment.amount_cents = 123.5
   assert.throws(() => validateOperation(fractional), /integer cents/)
 })
+
+test('rejects repeated line IDs and invalid sale timestamps before database work', () => {
+  const repeated = validOperation()
+  repeated.items.push({ ...repeated.items[0] })
+  repeated.order.subtotal_cents *= 2
+  repeated.order.tax_cents *= 2
+  repeated.order.total_cents *= 2
+  repeated.payment.amount_cents *= 2
+  repeated.payment.tendered_cents = repeated.payment.amount_cents
+  repeated.payment.change_cents = 0
+  assert.throws(() => validateOperation(repeated), /Item IDs must be unique/)
+  const invalidTime = validOperation()
+  invalidTime.order.client_generated_at = '2026-02-30T09:00:00.000Z'
+  assert.throws(() => validateOperation(invalidTime), /valid UTC timestamp/)
+})

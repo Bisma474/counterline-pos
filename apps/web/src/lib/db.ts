@@ -107,6 +107,7 @@ export type OutboxStatus = 'pending' | 'synced' | 'failed'
 
 export interface OutboxEntry {
   id?: number              // auto-increment PK
+  store_id: string
   operation_id: string     // UUID, unique per operation
   order_id: string
   status: OutboxStatus
@@ -172,6 +173,18 @@ export class CounterlineDatabase extends Dexie {
     // Keep SKU uniqueness within a store so two store catalogs may reuse the same SKU.
     this.version(2).stores({
       products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id',
+    })
+
+    this.version(3).stores({
+      orders: 'id, &receipt_number, client_generated_at, sync_status, store_id, [store_id+client_generated_at]',
+      outbox: '++id, &operation_id, status, next_attempt_at, store_id',
+    }).upgrade(async transaction => {
+      const outbox = transaction.table<OutboxEntry, number>('outbox')
+      const orders = transaction.table<LocalOrder, string>('orders')
+      for (const entry of await outbox.toArray()) {
+        const order = await orders.get(entry.order_id)
+        await outbox.update(entry.id!, { store_id: order?.store_id ?? '' })
+      }
     })
   }
 }

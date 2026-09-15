@@ -36,6 +36,7 @@ export function RegisterScreen() {
         const id = await activeStoreId()
         if (!active) return
         setStoreId(id)
+        setStoreContext(id, '')
         const cached = await posDb.store_config.get(id)
         if (cached) setStoreContext(id, cached.name)
         const refresh = async () => {
@@ -55,7 +56,7 @@ export function RegisterScreen() {
         }
         await refresh()
         try {
-          await pushPendingOrders()
+          await pushPendingOrders(id)
           const result = await loadCatalog(id)
           if (result === 'updated') await refresh()
           if (!await posDb.products.where('store_id').equals(id).count()) throw new Error('Connect to load this store’s products.')
@@ -97,7 +98,7 @@ export function RegisterScreen() {
       {!loading && !error && !visible.length && <p className="screen-note">{products.length ? 'No products match your search.' : 'No catalog saved. Connect to load this store’s products.'}</p>}
       <div className="catalog-grid">{visible.map(product => <button type="button" className="catalog-card" key={product.id}
         disabled={Boolean(product.tax_rate_id && taxRates[product.tax_rate_id] === undefined)}
-        onClick={() => addItem({ productId: product.id, name: product.name, sku: product.sku,
+        onClick={() => addItem({ storeId, productId: product.id, name: product.name, sku: product.sku,
           unitPriceCents: product.unit_price_cents, taxRateBps: taxRates[product.tax_rate_id ?? ''] ?? 0,
           catalogVersion })}>
         <div className="product-art" aria-hidden="true" /><strong>{product.name}</strong>
