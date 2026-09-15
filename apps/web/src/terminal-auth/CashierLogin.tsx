@@ -1,21 +1,26 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
 import { currentAccess, lockTerminal, loginCashier, readTerminal, refreshTerminal, type TerminalCache } from './cache'
 import './terminal-auth.css'
 
+const keypad = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+
 export function CashierLogin() {
   const [cache, setCache] = useState<TerminalCache>()
   const [employeeId, setEmployeeId] = useState('')
+  const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
   const [offlineReady, setOfflineReady] = useState(false)
   const [managerApproval, setManagerApproval] = useState(false)
+
   async function load() {
     const state = await currentAccess()
     setCache(state?.cache); setManagerApproval(state?.policy.managerApproval ?? false)
   }
+
   useEffect(() => {
     registerSW({ onOfflineReady: () => setOfflineReady(true), onRegisterError: () => setError('The offline app could not be cached. Keep this page open and retry online.') })
     let active = true
@@ -26,26 +31,34 @@ export function CashierLogin() {
     }
     void update()
     const connection = () => { setOnline(navigator.onLine); if (navigator.onLine) { setBusy(true); void update() } }
-    const interval = window.setInterval(() => { void load().catch(reason => setError(String(reason))) }, 5000)
-    // Revalidate connected cashier permissions; changed access locks on refresh.
+    const interval = window.setInterval(() => { void load().catch(reason => setError(String(reason))) }, 5_000)
     const refresh = window.setInterval(() => { if (navigator.onLine) void update() }, 60_000)
     window.addEventListener('online', connection); window.addEventListener('offline', connection)
     return () => { active = false; clearInterval(interval); clearInterval(refresh); window.removeEventListener('online', connection); window.removeEventListener('offline', connection) }
   }, [])
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = event.currentTarget
-    const pin = String(new FormData(form).get('pin'))
-    form.reset(); setBusy(true); setError('')
-    try { await loginCashier(employeeId, pin); await load() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to unlock terminal.') }
+
+  async function unlock() {
+    setBusy(true); setError('')
+    try { await loginCashier(employeeId, pin); setPin(''); await load() }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to unlock terminal.'); setPin('') }
     finally { setBusy(false) }
   }
+
   async function refresh() {
     setBusy(true); setError('')
     try { await refreshTerminal(); await load() }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to refresh terminal.'); await load() }
     finally { setBusy(false) }
   }
+
+  function appendDigit(value: string) { if (!busy) setPin(current => current.length < 8 ? `${current}${value}` : current) }
   const employee = cache?.employees.find(row => row.id === cache.session?.employee_id)
-  return <main className="terminal-page"><header><Link to="/pos/login">Counterline · Cashier access</Link><Link to="/login">Owner or manager email sign in</Link></header><section className="terminal-card cashier-card"><p className="kicker">AT THE COUNTER</p><h1>{employee ? `Hello, ${employee.name}.` : 'Unlock your terminal.'}</h1><p role="status">{online ? 'Connected' : 'Offline'}{offlineReady ? ' · Offline sign-in app saved' : ''}</p>{error && <p className="form-notice error" role="alert">{error}</p>}{busy && <p role="status">Checking terminal access…</p>}{cache ? <><p><strong>{cache.device.name}</strong><small className="terminal-prefix">Receipt prefix: {cache.device.receipt_prefix}</small></p>{employee && cache.session ? <section aria-label="Cashier session"><h2>PIN access granted.</h2><p>{employee.role === 'manager' ? managerApproval ? 'Manager approval access is current.' : 'Manager approval requires online validation after 72 hours.' : 'Cashier access is current.'}</p><p>Register and checkout integration will be connected separately.</p><button className="cta" disabled={busy} onClick={() => { setBusy(true); void lockTerminal().then(load).catch(reason => setError(String(reason))).finally(() => setBusy(false)) }}>Lock terminal</button></section> : cache.employees.length ? <form onSubmit={event => void submit(event)}><label>Employee<select value={employeeId} required disabled={busy} onChange={event => setEmployeeId(event.target.value)}><option value="">Choose your name</option>{cache.employees.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label>PIN<input name="pin" type="password" inputMode="numeric" pattern="[0-9]{4,8}" minLength={4} maxLength={8} autoComplete="off" required disabled={busy} /></label><button className="cta" type="submit" disabled={busy}>Unlock terminal</button></form> : <p>No cached employees are available. Ask a manager to add active employees, then refresh terminal access.</p>}<button type="button" disabled={!online || busy} onClick={() => void refresh()}>Refresh terminal access</button><p className="terminal-help">Offline PIN access lasts up to seven days after server validation. Five wrong attempts lock access for 60 seconds.</p></> : !busy && <><p>This browser needs online manager setup before cashier sign in.</p><Link className="cta" to="/settings/terminals">Set up terminal</Link></>}</section></main>
+  const pinLength = Math.max(4, Math.min(8, pin.length || 4))
+
+  return <main className="cashier-page"><header className="cashier-brand"><Link to="/pos/login"><span aria-hidden="true">C</span> Counterline</Link></header><section className="cashier-card">
+    {error && <p className="form-notice error" role="alert">{error}</p>}
+    {busy && <p className="cashier-loading" role="status">Checking terminal access…</p>}
+    {!cache && !busy && <div className="cashier-empty"><span className="cashier-hero-icon" aria-hidden="true">▣</span><h1>Set up this terminal first.</h1><p>This browser needs online manager provisioning before a cashier can unlock the POS.</p><Link className="cta" to="/settings/terminals">Set up terminal <b aria-hidden="true">→</b></Link></div>}
+    {cache && employee && cache.session ? <section className="cashier-success" aria-label="Cashier session"><span className="success-lock" aria-hidden="true">♙</span><h1>Hello, {employee.name}</h1><p className="success-badge">✓ PIN access granted</p><p>You can now access the POS system.</p><div className="success-terminal"><span aria-hidden="true">▣</span><div><div><strong>{cache.device.name}</strong><span className="terminal-state active">Active</span></div><small>Receipt prefix: {cache.device.receipt_prefix}</small></div></div><button className="cta cashier-open-register" type="button" disabled title="Register access will be connected with the checkout integration.">Open register</button><button className="secondary-cta cashier-lock" type="button" disabled={busy} onClick={() => { setBusy(true); void lockTerminal().then(load).catch(reason => setError(String(reason))).finally(() => setBusy(false)) }}>Lock terminal</button>{employee.role === 'manager' && <p className="terminal-help">{managerApproval ? 'Manager approval access is current.' : 'Manager approval requires online validation after 72 hours.'}</p>}</section> : cache && <section className="cashier-unlock"><div className="cashier-heading"><span className="cashier-terminal-icon" aria-hidden="true">▣</span><div><div className="cashier-title-row"><h1>Unlock {cache.device.name}</h1><span className={`terminal-state ${online ? 'active' : 'offline'}`}>{online ? 'Connected' : 'Offline'}</span></div><p>Receipt prefix: <strong>{cache.device.receipt_prefix}</strong></p></div></div>{cache.employees.length ? <><label className="cashier-label">Select employee<select value={employeeId} required disabled={busy} onChange={event => { setEmployeeId(event.target.value); setPin('') }}><option value="">Choose your name</option>{cache.employees.map(row => <option key={row.id} value={row.id}>{row.name} · {row.role}</option>)}</select></label><div className="cashier-label"><span>Enter PIN</span><input className="sr-only" aria-label="PIN" type="password" inputMode="numeric" pattern="[0-9]{4,8}" value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, '').slice(0, 8))} autoComplete="off" /><div className="pin-slots" aria-hidden="true">{Array.from({ length: pinLength }, (_, index) => <span key={index}>{index < pin.length ? '•' : ''}</span>)}</div></div><div className="pin-keypad" aria-label="PIN keypad">{keypad.map(value => <button key={value} type="button" disabled={busy} onClick={() => appendDigit(value)}>{value}</button>)}<button type="button" disabled={busy} aria-label="Delete PIN digit" onClick={() => setPin(current => current.slice(0, -1))}>⌫</button><button type="button" disabled={busy} onClick={() => appendDigit('0')}>0</button><button type="button" disabled={busy} onClick={() => setPin('')}>Clear</button></div><button className="cta cashier-unlock-button" type="button" disabled={busy || !employeeId || pin.length < 4} onClick={() => void unlock()}>Unlock POS</button></> : <p>No cached employees are available. Ask a manager to add an active cashier, then refresh terminal access.</p>}<button className="secondary-cta cashier-refresh" type="button" disabled={!online || busy} onClick={() => void refresh()}>Refresh terminal access</button><p className="terminal-help">Offline PIN access is available for up to 7 days after online validation.{offlineReady ? ' Offline sign-in app saved.' : ''}</p></section>}
+  </section><footer className="cashier-footer"><Link to="/login">Owner or manager sign in →</Link></footer></main>
 }
