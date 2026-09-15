@@ -20,10 +20,17 @@ export function SettingsOverview() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const loadTeam = async (storeId: string) => {
-    const { data, error } = await requireSupabase().from('store_memberships')
-      .select('user_id, role, active, joined_at, profiles(full_name)').eq('store_id', storeId).eq('active', true).order('joined_at')
-    if (error) throw error
-    setTeam((data ?? []) as TeamMember[])
+    const client = requireSupabase()
+    const { data: memberships, error: membershipError } = await client.from('store_memberships')
+      .select('user_id, role, active, joined_at').eq('store_id', storeId).eq('active', true).order('joined_at')
+    if (membershipError) throw membershipError
+    const ids = (memberships ?? []).map(member => member.user_id)
+    const { data: profiles, error: profileError } = ids.length
+      ? await client.from('profiles').select('id, full_name').in('id', ids)
+      : { data: [], error: null }
+    if (profileError) throw profileError
+    const names = new Map((profiles ?? []).map(profile => [profile.id, profile.full_name]))
+    setTeam((memberships ?? []).map(member => ({ ...member, profiles: names.has(member.user_id) ? [{ full_name: names.get(member.user_id)! }] : [] })))
   }
   const load = async () => {
     if (!supabase) { setLoading(false); return }
