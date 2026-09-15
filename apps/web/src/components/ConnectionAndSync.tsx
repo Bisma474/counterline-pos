@@ -6,6 +6,7 @@ import { usePosStore } from '../lib/pos-store'
 
 export function ConnectionAndSync() {
   const catalogStatus = usePosStore(state => state.catalogStatus)
+  const storeId = usePosStore(state => state.storeId)
   const [apiReachable, setApiReachable] = useState<boolean | null>(null)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [unresolved, setUnresolved] = useState<number | null>(null)
@@ -15,16 +16,17 @@ export function ConnectionAndSync() {
   const update = useCallback(async () => {
     setOffline(!navigator.onLine)
     try {
-      const entries = await posDb.outbox.where('status').anyOf('pending', 'failed').toArray()
-      setUnresolved(entries.length)
-      setEligible(entries.filter(entry => entry.status === 'pending' || entry.failure_kind === 'connectivity').length)
+      const entries = storeId ? await posDb.outbox.where('store_id').equals(storeId).toArray() : []
+      const unresolvedEntries = entries.filter(entry => entry.status !== 'synced')
+      setUnresolved(unresolvedEntries.length)
+      setEligible(unresolvedEntries.filter(entry => entry.status === 'pending' || entry.failure_kind === 'connectivity').length)
     } catch { setUnresolved(null); setEligible(0) }
     if (!navigator.onLine) { setApiReachable(false); return }
     try {
       const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
       setApiReachable(response.ok)
     } catch { setApiReachable(false) }
-  }, [])
+  }, [storeId])
 
   useEffect(() => {
     void update()
@@ -36,7 +38,7 @@ export function ConnectionAndSync() {
 
   const sync = async () => {
     setBusy(true)
-    try { await pushPendingOrders() } catch { /* The queue retains retryable failures. */ }
+    try { await pushPendingOrders(storeId) } catch { /* The queue retains retryable failures. */ }
     finally { setBusy(false); await update() }
   }
   const label = offline ? 'Browser offline' : apiReachable === null ? 'Checking API…' :
@@ -46,5 +48,5 @@ export function ConnectionAndSync() {
     role="status" title={detail}>{detail}</div>
     <button className="sync" type="button" aria-label={busy ? 'Syncing orders' : `Sync pending orders${eligible ? `, ${eligible} eligible` : ''}`}
       title={eligible ? `Sync ${eligible} eligible order${eligible === 1 ? '' : 's'}` : 'No orders ready to sync'}
-      onClick={() => void sync()} disabled={busy || !apiReachable || eligible === 0}>↻</button></>
+      onClick={() => void sync()} disabled={busy || !apiReachable || !storeId || eligible === 0}>↻</button></>
 }

@@ -1,23 +1,45 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import Dexie from 'dexie'
 import { formatCents } from '../../../../packages/domain/src/money'
+import { activeStoreId } from '../lib/catalog'
 import { posDb, type LocalOrder, type LocalOrderItem, type LocalPayment } from '../lib/db'
 import { pushPendingOrders, retryOrder } from '../lib/order-sync'
+import { usePosStore } from '../lib/pos-store'
 
 export function OrderHistoryScreen() {
   const location = useLocation()
   const completed = (location.state as { completed?: string } | null)?.completed
+  const [storeId, setStoreId] = useState(usePosStore.getState().storeId)
   const [orders, setOrders] = useState<LocalOrder[]>([])
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<{ order: LocalOrder; items: LocalOrderItem[]; payment: LocalPayment | undefined } | null>(null)
-  const refresh = async () => setOrders((await posDb.orders.orderBy('client_generated_at').reverse().toArray()))
-  useEffect(() => { void refresh(); const handler = () => void pushPendingOrders().then(refresh).catch(() => undefined)
+  const refresh = async (id: string) => setOrders(await posDb.orders.where('[store_id+client_generated_at]')
+    .between([id, Dexie.minKey], [id, Dexie.maxKey]).reverse().toArray())
+  useEffect(() => {
+    let active = true
+    let currentStore = storeId
+    const init = async () => {
+      try {
+        if (!currentStore) currentStore = await activeStoreId()
+        if (!active) return
+        setStoreId(currentStore)
+        await refresh(currentStore)
+      } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Unable to load this store’s orders.') }
+    }
+    void init()
+    const handler = () => { if (currentStore) void pushPendingOrders(currentStore).then(() => refresh(currentStore)).catch(() => undefined) }
     window.addEventListener('online', handler)
-    const timer = window.setInterval(() => { void refresh(); if (navigator.onLine) void pushPendingOrders().then(refresh).catch(() => undefined) }, 15_000)
-    return () => { window.removeEventListener('online', handler); window.clearInterval(timer) } }, [])
-  const sync = async () => { setBusy(true); setError(''); try { await pushPendingOrders(); await refresh() }
+    const timer = window.setInterval(() => {
+      if (!currentStore) return
+      void refresh(currentStore)
+      if (navigator.onLine) void pushPendingOrders(currentStore).then(() => refresh(currentStore)).catch(() => undefined)
+    }, 15_000)
+    return () => { active = false; window.removeEventListener('online', handler); window.clearInterval(timer) }
+  }, [])
+  const sync = async () => { if (!storeId) return; setBusy(true); setError(''); try { await pushPendingOrders(storeId); await refresh(storeId) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not sync orders.') } finally { setBusy(false) } }
   const show = async (order: LocalOrder) => setSelected({ order, items: await posDb.order_items.where('order_id').equals(order.id).toArray(),
     payment: await posDb.payments.where('order_id').equals(order.id).first() })
@@ -25,14 +47,14 @@ export function OrderHistoryScreen() {
   return <section className="order-history"><p className="kicker">LOCAL ORDER HISTORY</p><h1>Orders.</h1>
     {completed && <p className="form-notice" role="status">Sale {completed} saved in this browser. Sync may still be pending.</p>}
     <div className="history-tools"><label>Find receipt or date<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Receipt number or date" /></label>
-      <button type="button" onClick={() => void sync()} disabled={busy}>{busy ? 'Syncing…' : 'Sync pending orders'}</button></div>
+      <button type="button" onClick={() => void sync()} disabled={busy || !storeId}>{busy ? 'Syncing…' : 'Sync pending orders'}</button></div>
     {error && <p className="form-notice error" role="alert">{error}</p>}
-    {!orders.length && <p>No orders have been saved in this browser yet.</p>}
+    {storeId && !orders.length && <p>No orders have been saved for this store in this browser yet.</p>}
     {orders.length > 0 && !visible.length && <p>No orders match your search.</p>}
     <div className="history-list">{visible.map(order => <article key={order.id}><div><strong>{order.receipt_number}</strong><small>{new Date(order.client_generated_at).toLocaleString()}</small></div>
       <b>{formatCents(order.total_cents, order.currency)}</b><span className={`order-state ${order.sync_status}`}>{order.sync_status === 'failed' ? 'Rejected / needs review' : order.sync_status === 'synced' ? 'Synced' : 'Pending sync'}</span>
       <button type="button" onClick={() => void show(order)}>Details</button>
-      {order.sync_status === 'pending' && order.failure_reason && <button type="button" onClick={() => void retryOrder(order.id).then(refresh)}>Retry now</button>}
+      {order.sync_status === 'pending' && order.failure_reason && <button type="button" onClick={() => void retryOrder(order.id, storeId).then(() => refresh(storeId))}>Retry now</button>}
       {order.failure_reason && <p className="history-reason">{order.failure_reason}</p>}</article>)}</div>
     {selected && <div className="history-detail"><button type="button" onClick={() => setSelected(null)}>Close</button><h2>{selected.order.receipt_number}</h2>
       <p>{selected.order.store_name_snapshot} · {new Date(selected.order.client_generated_at).toLocaleString()}</p>

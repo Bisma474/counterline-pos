@@ -13,12 +13,23 @@ export async function accessToken(): Promise<string> {
 }
 export async function activeStoreId(): Promise<string> {
   const client = requireSupabase()
+  const { data: sessionResult } = await client.auth.getSession()
+  const sessionUser = sessionResult.session?.user
+  if (!sessionUser) throw new Error('Sign in to load a store.')
+  const cacheKey = `active_store:${sessionUser.id}`
+  if (!navigator.onLine) {
+    const saved = await posDb.sync_metadata.get(cacheKey)
+    if (saved?.value) return saved.value
+    throw new Error('Connect once to confirm this account’s store membership.')
+  }
   const { data: userResult, error: userError } = await client.auth.getUser()
   if (userError || !userResult.user) throw new Error('Sign in to load a store.')
   const { data, error } = await client.from('store_memberships').select('store_id').eq('user_id', userResult.user.id).eq('active', true).limit(1)
   if (error) throw error
   if (!data?.[0]) throw new Error('No active store membership was found.')
-  return data[0].store_id as string
+  const storeId = data[0].store_id as string
+  await posDb.sync_metadata.put({ key: cacheKey, value: storeId })
+  return storeId
 }
 
 type Snapshot = {
@@ -53,7 +64,7 @@ export async function loadCatalog(storeId: string): Promise<'updated' | 'cached'
   })
   await posDb.transaction('rw', [posDb.store_config, posDb.categories, posDb.tax_rates,
     posDb.products, posDb.server_stock, posDb.stock_adjustments, posDb.outbox], async () => {
-      const unresolved = await posDb.outbox.where('status').anyOf('pending', 'failed').toArray()
+      const unresolved = await posDb.outbox.where('store_id').equals(storeId).toArray()
       if (unresolved.some(entry => entry.status === 'pending' || entry.failure_kind !== 'validation')) {
         throw new Error('Pending sync outcomes must be resolved before refreshing stock.')
       }
@@ -61,7 +72,9 @@ export async function loadCatalog(storeId: string): Promise<'updated' | 'cached'
         timezone: snapshot.store.timezone, currency: snapshot.store.currency, catalog_version: snapshot.catalog_version })
       await posDb.categories.where('store_id').equals(storeId).delete()
       await posDb.tax_rates.where('store_id').equals(storeId).delete()
+      const oldProducts = await posDb.products.where('store_id').equals(storeId).primaryKeys()
       await posDb.products.where('store_id').equals(storeId).delete()
+      await posDb.server_stock.bulkDelete(oldProducts)
       await posDb.categories.bulkPut(snapshot.categories.map(category => ({ ...category, parent_id: null })))
       await posDb.tax_rates.bulkPut(snapshot.tax_rates)
       await posDb.products.bulkPut(products)

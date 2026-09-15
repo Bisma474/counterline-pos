@@ -4,6 +4,7 @@ import type { CartItem } from './pos-store'
 
 export async function completeLocalSale(items: CartItem[], storeId: string, method: 'cash' | 'card', tenderedCents: number, reference: string | null) {
   if (!items.length) throw new Error('Add a product before checkout.')
+  if (items.some(item => item.storeId !== storeId)) throw new Error('Cart contains a product from another store. Clear the cart and try again.')
   const config = await posDb.store_config.get(storeId)
   if (!config) throw new Error('Store catalog has not been downloaded to this browser.')
   const lines = items.map(item => calculateLine(item.unitPriceCents, item.quantity, item.taxRateBps))
@@ -17,7 +18,7 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
   await posDb.transaction('rw', [posDb.orders, posDb.order_items, posDb.payments,
     posDb.outbox, posDb.stock_adjustments, posDb.sync_metadata], async () => {
       const prefixRow = await posDb.sync_metadata.get(`receipt_prefix:${storeId}`)
-      const prefix = prefixRow?.value ?? `LOCAL-${crypto.randomUUID().slice(0, 8).toUpperCase()}-`
+      const prefix = prefixRow?.value ?? `LOCAL-${crypto.randomUUID().toUpperCase()}-`
       const sequenceKey = `receipt_seq:${storeId}`
       const sequence = Number((await posDb.sync_metadata.get(sequenceKey))?.value ?? '0') + 1
       if (!Number.isSafeInteger(sequence)) throw new Error('Receipt sequence is exhausted.')
@@ -35,7 +36,7 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
         amount_cents: totals.totalCents, tendered_cents: tenderedCents,
         change_cents: method === 'cash' ? tenderedCents - totals.totalCents : 0, reference }
       const payload = { operation_id: operationId, order, items: orderItems, payment }
-      const outbox: OutboxEntry = { operation_id: operationId, order_id: operationId, status: 'pending',
+      const outbox: OutboxEntry = { store_id: storeId, operation_id: operationId, order_id: operationId, status: 'pending',
         failure_reason: null, failure_kind: null, reason_code: null, attempt_count: 0,
         lease_owner: null, lease_expires_at: null, accepted_checkpoint: null,
         next_attempt_at: now, created_at: now, payload: JSON.stringify(payload) }

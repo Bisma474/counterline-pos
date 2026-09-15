@@ -52,6 +52,9 @@ export function validateOperation(raw: unknown) {
       catalog_version: item.catalog_version as number,
       quantity: item.quantity as number, ...{ subtotal_cents: line.subtotalCents, tax_cents: line.taxCents, total_cents: line.totalCents } }
   })
+  if (new Set(parsedItems.map(item => item.id)).size !== parsedItems.length) {
+    throw new ApiError(422, 'validation_failed', 'Item IDs must be unique within a sale.')
+  }
   let totals: ReturnType<typeof sumLines>
   try { totals = sumLines(parsedItems.map(item => ({ subtotalCents: item.subtotal_cents, taxCents: item.tax_cents, totalCents: item.total_cents }))) }
   catch { throw new ApiError(422, 'total_mismatch', 'Order exceeds the supported money range.') }
@@ -68,7 +71,10 @@ export function validateOperation(raw: unknown) {
     throw new ApiError(422, 'total_mismatch', 'Payment does not balance with the order.')
   }
   const generatedAt = text(order.client_generated_at, 'Sale time', 40)
-  if (Number.isNaN(Date.parse(generatedAt))) throw new ApiError(422, 'validation_failed', 'Sale time is invalid.')
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(generatedAt) ||
+      Number.isNaN(Date.parse(generatedAt)) || new Date(generatedAt).toISOString() !== generatedAt) {
+    throw new ApiError(422, 'validation_failed', 'Sale time must be a valid UTC timestamp.')
+  }
   if (!Number.isSafeInteger(order.catalog_version) || (order.catalog_version as number) < 1 || (order.catalog_version as number) > MAX_CENTS) {
     throw new ApiError(422, 'validation_failed', 'Catalog version is invalid.')
   }
