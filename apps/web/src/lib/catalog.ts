@@ -36,7 +36,10 @@ export async function loadCatalog(storeId: string): Promise<'updated' | 'cached'
   const response = await fetch(`${configuredApiUrl()}/catalog/snapshot?store_id=${encodeURIComponent(storeId)}`, {
     headers: { Authorization: `Bearer ${await accessToken()}` },
   })
-  if (!response.ok) throw new Error(`Catalog could not be loaded (${response.status}).`)
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as { message?: string } | null
+    throw new Error(`${failure?.message ?? 'Catalog could not be loaded.'} (${response.status})`)
+  }
   const snapshot = await response.json() as Snapshot
   if (snapshot.store?.id !== storeId) throw new Error('Catalog response belongs to another store.')
   if (!/^\d+$/.test(snapshot.checkpoint)) throw new Error('Catalog checkpoint is invalid.')

@@ -26,6 +26,7 @@ export function RegisterScreen() {
   const remove = usePosStore(state => state.removeItem)
   const clear = usePosStore(state => state.clearCart)
   const setStoreContext = usePosStore(state => state.setStoreContext)
+  const setCatalogStatus = usePosStore(state => state.setCatalogStatus)
   const totals = usePosStore(state => state.totals)
 
   useEffect(() => {
@@ -53,14 +54,25 @@ export function RegisterScreen() {
           setStock(base)
         }
         await refresh()
-        try { await pushPendingOrders(); const result = await loadCatalog(id); if (result === 'updated') await refresh() }
-        catch (reason) { setNotice(reason instanceof Error ? `Using saved catalog. ${reason.message}` : 'Using saved catalog.') }
-      } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Unable to open the register.') }
+        try {
+          await pushPendingOrders()
+          const result = await loadCatalog(id)
+          if (result === 'updated') await refresh()
+          if (!await posDb.products.where('store_id').equals(id).count()) throw new Error('Connect to load this store’s products.')
+          setCatalogStatus('ready')
+        }
+        catch (reason) {
+          setCatalogStatus('unavailable')
+          const message = reason instanceof Error ? reason.message : 'Catalog service is unavailable.'
+          if (await posDb.products.where('store_id').equals(id).count()) setNotice(`Using saved catalog. ${message}`)
+          else setError(`No catalog saved for this store. ${message}`)
+        }
+      } catch (reason) { if (active) { setCatalogStatus('unavailable'); setError(reason instanceof Error ? reason.message : 'Unable to open the register.') } }
       finally { if (active) setLoading(false) }
     }
     void boot()
     return () => { active = false }
-  }, [setStoreContext])
+  }, [setStoreContext, setCatalogStatus])
 
   const visible = useMemo(() => products.filter(product => {
     const term = query.trim().toLowerCase()
