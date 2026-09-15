@@ -7,7 +7,8 @@ info:
     Serve through a same-origin /api proxy. Mutations require the exact configured
     Origin. Responses are no-store. Credentials are opaque HttpOnly, SameSite=Strict
     cookies (Secure in production), never JSON or browser storage tokens.
-    Device access lasts 15 minutes, rotating refresh credentials last 30 days.
+    Device access lasts 15 minutes. Device refresh sessions last 30 days and retain
+    a 60-second single-use retry window after rotation for lost-response recovery.
     Refresh revalidates an unexpired cashier session; changed/inactive employees lock.
     Provision and refresh return only the active employee credential projection.
     Offline access is limited to seven days; manager approvals to 72 hours.
@@ -33,7 +34,7 @@ paths:
                 name: { type: string, minLength: 1, maxLength: 80 }
       responses:
         '201':
-          description: Fresh installation; sets terminal_access and terminal_refresh cookies and clears cashier cookie. Revokes this browser's previous installation in the same store.
+          description: Fresh installation; sets terminal_access and terminal_refresh cookies and clears cashier cookie. A valid refresh credential revokes this browser's previous installation even when moving between managed stores.
           headers:
             Set-Cookie: { schema: { type: string }, description: HttpOnly terminal credentials, Path=/api }
           content:
@@ -78,7 +79,7 @@ paths:
     post:
       operationId: refreshTerminal
       summary: Rotate terminal cookies and replace the cached employee projection
-      description: Serializes rotation. The old refresh credential is immediately invalid. An ambiguous/lost response may require manager reprovisioning. Concurrent browser calls must use the terminal Web Lock. Does not reset lockout counters.
+      description: Serializes rotation into a new device-session record. The previous access token is immediately invalid; its refresh token may retry for 60 seconds to replace an unreachable child after a lost response. Concurrent browser calls must use the terminal Web Lock. Does not reset lockout counters.
       security: [{ deviceRefresh: [] }]
       responses:
         '200':

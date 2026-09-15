@@ -13,7 +13,7 @@ The owner authentication functions and existing Settings invitation form are unc
 ## Run locally
 
 1. Install dependencies with `npm ci` in both `apps/api` and `apps/web`.
-2. Apply the existing owner/store migration, then **only** `supabase/migrations/202609150001_terminal_employee_access.sql` for this feature. Do not apply or merge PR 2's draft migration.
+2. Apply the existing owner/store migration, then `supabase/migrations/202609150001_terminal_employee_access.sql` and `supabase/migrations/202609150002_terminal_device_sessions.sql` in order. If the first terminal migration is already applied, apply only the `...0002...` follow-up. Do not apply or merge PR 2's draft migration.
 3. Supply the API process with the variables documented in `apps/api/.env.example`. Keep the database connection string on the server. The API requires a database role with access to the terminal tables and permission to read/lock store memberships. The migration grants terminal operations to Supabase's server `service_role`; browser roles have no table access. Do not send this connection string or any server key to Vite.
 4. Start the API from `apps/api`: `node --env-file=.env --import tsx src/server.ts`. The example file is a template; create the ignored `.env` locally with your environment's values.
 5. Start the frontend from `apps/web`: `npm run dev`. Existing Supabase frontend configuration remains as documented for owner login.
@@ -24,7 +24,8 @@ Offline reload requires the **production build** served over HTTPS (localhost is
 ## Security and cache behavior
 
 - Provisioning allocates a fresh installation UUID and globally unique UUID receipt prefix with a trailing hyphen. Reprovisioning never reuses a prefix. Receipt sequence allocation belongs to the future checkout transaction.
-- Device access cookies expire in 15 minutes; refresh cookies rotate with a 30-day expiry. Refresh rejects revoked/expired devices. A lost rotation response can require manager reprovisioning.
+- Device access cookies expire in 15 minutes. Refresh credentials live in separate, revocable device-session records with rotation lineage and a 30-day expiry. Rotation invalidates the previous access token immediately and keeps its refresh credential usable for a fixed 60-second retry window. Retrying replaces an unreachable child created by a lost response.
+- Provisioning with a valid refresh credential revokes the browser's previous installation and all its sessions, including when a manager moves the browser to another store.
 - Cashier session cookies expire in 15 minutes. Refresh extends only a valid current cashier session whose employee is still active and whose permission version matches. PIN/role/active changes increment the version and expire existing server sessions.
 - Online wrong attempts are serialized with PostgreSQL locks, counted per device and employee, and persisted: five attempts trigger 60 seconds of lockout. Refresh preserves counters. Local unlock counts attempts before doing crypto so tab closure cannot erase an attempt; Web Locks serialize access across tabs.
 - PIN verifiers use a random 16-byte salt, version 1 PBKDF2-HMAC-SHA256, 600,000 iterations and a 32-byte result. This matches the project contract and [OWASP's PBKDF2 guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
@@ -56,7 +57,7 @@ The browser test builds with local test-only Supabase configuration, runs the re
 
 ## Review checklist and deployment limits
 
-Local verification on 2026-09-15 (Windows, Node 24.18.1, Playwright Chromium): API build passed; three PIN/policy tests passed; nine OpenAPI/migration/API test results passed; the browser workflow passed. Browser checks cover all three new screens at 375, 390, 768 and 1440 pixels, actual offline app reload, persisted lockout, clock rollback, local lock surviving reconnection, and connected employee deactivation. The web build passes with Vite's main-bundle size warning (approximately 517 kB); terminal modules are separate lazy-loaded chunks.
+Local verification on 2026-09-15 (Windows, Node 24.19.0, Playwright Chromium): API build passed; three PIN/policy tests passed; ten OpenAPI/migration/API test results passed; the browser workflow passed. API integration checks include refresh lost-response recovery and cross-store reprovisioning. Browser checks cover all three new screens at 375, 390, 768 and 1440 pixels, actual offline app reload, persisted lockout, clock rollback, local lock surviving reconnection, and connected employee deactivation. The web build passes with Vite's main-bundle size warning (approximately 517 kB); terminal modules are separate lazy-loaded chunks.
 
 | Screen | Laptop | Mobile |
 |---|---|---|

@@ -18,6 +18,7 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
   // PGlite already provides gen_random_uuid; pgcrypto extension packaging is unavailable here.
   await db.exec(base.replace('create extension if not exists pgcrypto;', ''))
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609150001_terminal_employee_access.sql', import.meta.url), 'utf8'))
+  await db.exec(await readFile(new URL('../../../supabase/migrations/202609150002_terminal_device_sessions.sql', import.meta.url), 'utf8'))
   const owner = randomUUID(), cashier = randomUUID(), store = randomUUID(), otherStore = randomUUID()
   await db.query('insert into auth.users(id) values($1),($2)', [owner, cashier])
   await db.query("insert into public.stores(id,name,code,created_by) values($1,'Test store','test-a',$3),($2,'Other store','test-b',$3)", [store, otherStore, owner])
@@ -60,10 +61,11 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
       await assert.rejects(db.query('select * from public.terminal_employees'))
       await assert.rejects(db.query('select * from public.terminal_devices'))
       await assert.rejects(db.query('select * from public.terminal_cashier_sessions'))
+      await assert.rejects(db.query('select * from public.terminal_device_sessions'))
       await db.exec('reset role')
     }
     const tables = await db.query<{ tablename: string; rowsecurity: boolean }>("select tablename,rowsecurity from pg_tables where schemaname='public' and tablename like 'terminal_%'")
-    assert.equal(tables.rows.length, 3)
+    assert.equal(tables.rows.length, 4)
     assert(tables.rows.every(row => row.rowsecurity))
   })
   await t.test('manager authorization and origin checks', async () => {
@@ -106,6 +108,12 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
     const refreshed = await call('/auth/refresh', {})
     assert.equal(refreshed.status, 200)
     assert((await refreshed.json() as { session?: unknown }).session)
+    // Simulate a committed rotation whose response was lost: the old refresh cookie can
+    // retry briefly and replaces the unreachable child session.
+    assert.equal((await call('/auth/refresh', {}, undefined, oldCookie)).status, 200)
+    const activeChildren = await db.query<{ count: string }>("select count(*)::text count from public.terminal_device_sessions where rotated_from is not null and rotated_at is null and revoked_at is null")
+    assert.equal(activeChildren.rows[0].count, '1')
+    await db.exec("update public.terminal_device_sessions set rotated_at=now()-interval '61 seconds' where refresh_hash is not null and rotated_at is not null")
     assert.equal((await call('/auth/refresh', {}, undefined, oldCookie)).status, 401)
     assert.equal((await call('/terminal-auth/employees', { id: employeeId, store_id: otherStore, name: 'Cross store', role: 'cashier', active: true }, 'test-owner')).status, 403)
     assert.equal((await call('/terminal-auth/employees', { id: employeeId, store_id: store, name: 'Test employee', role: 'cashier', active: false }, 'test-owner')).status, 200)
@@ -124,7 +132,19 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
     assert.equal((await call('/auth/refresh', {})).status, 401)
     const projection = await (await call('/devices/provision', { store_id: store, name: 'Counter restored' }, 'test-owner')).json() as { device: { id: string; receipt_prefix: string } }
     assert.notEqual(projection.device.id, deviceId); assert.notEqual(projection.device.receipt_prefix, prefix)
-    await db.exec("update public.terminal_devices set refresh_expires_at=now()-interval '1 second'")
+    await db.exec("update public.terminal_device_sessions set refresh_expires_at=now()-interval '1 second'")
     assert.equal((await call('/auth/refresh', {})).status, 401)
+  })
+  await t.test('cross-store reprovisioning revokes the previous browser installation', async () => {
+    await db.query("insert into public.store_memberships(store_id,user_id,role) values($1,$2,'owner')", [otherStore, owner])
+    // Restore a valid browser credential after the preceding expiry scenario.
+    assert.equal((await call('/devices/provision', { store_id: store, name: 'Counter before move' }, 'test-owner')).status, 201)
+    const previousDevice = (await db.query<{ id: string }>('select id from public.terminal_devices where store_id=$1 and revoked_at is null order by created_at desc limit 1', [store])).rows[0].id
+    const response = await call('/devices/provision', { store_id: otherStore, name: 'Other counter' }, 'test-owner')
+    assert.equal(response.status, 201)
+    const previous = await db.query<{ revoked_at: Date | null }>('select revoked_at from public.terminal_devices where id=$1', [previousDevice])
+    assert(previous.rows[0].revoked_at)
+    const sessions = await db.query<{ count: string }>('select count(*)::text count from public.terminal_device_sessions where device_id=$1 and revoked_at is null', [previousDevice])
+    assert.equal(sessions.rows[0].count, '0')
   })
 })

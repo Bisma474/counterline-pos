@@ -10,7 +10,7 @@ export interface TerminalAuthOptions {
   supabaseKey: string
   secureCookies: boolean
 }
-interface Device extends QueryResultRow { id: string; store_id: string; name: string; receipt_prefix: string; failed_attempts: number; locked_until: Date | null }
+interface Device extends QueryResultRow { id: string; store_id: string; name: string; receipt_prefix: string; failed_attempts: number; locked_until: Date | null; session_id: string }
 interface Employee extends QueryResultRow { id: string; name: string; role: 'cashier' | 'manager'; active: boolean; permission_version: number; pin_salt: string; pin_hash: string; failed_attempts: number; locked_until: Date | null }
 function body(req: Request): Record<string, unknown> {
   if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) fail(400, 'validation_failed', 'A JSON object is required.')
@@ -52,14 +52,18 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
   async function device(req: Request, client: PoolClient, refresh = false): Promise<Device> {
     const raw = cookie(req, refresh ? names.refresh : names.access)
     if (!/^[a-f0-9]{64}$/.test(raw)) fail(401, 'authentication_required', 'Provision this terminal or restore its session online.')
-    const column = refresh ? 'refresh' : 'access'
-    const result = await client.query<Device>(`select * from public.terminal_devices where ${column}_hash=$1 and ${column}_expires_at>now() and revoked_at is null for update`, [digest(raw)])
+    const result = refresh
+      ? await client.query<Device>(`select d.*,s.id session_id from public.terminal_device_sessions s join public.terminal_devices d on d.id=s.device_id and d.store_id=s.store_id where s.refresh_hash=$1 and s.refresh_expires_at>now() and s.revoked_at is null and (s.rotated_at is null or s.rotated_at>now()-interval '60 seconds') and d.revoked_at is null for update of d,s`, [digest(raw)])
+      : await client.query<Device>(`select d.*,s.id session_id from public.terminal_device_sessions s join public.terminal_devices d on d.id=s.device_id and d.store_id=s.store_id where s.access_hash=$1 and s.access_expires_at>now() and s.revoked_at is null and s.rotated_at is null and d.revoked_at is null for update of d,s`, [digest(raw)])
     if (!result.rows[0]) fail(401, 'authentication_required', 'The terminal session expired or was revoked. Ask a manager to provision it again.')
     return result.rows[0]
   }
-  async function rotate(client: PoolClient, deviceId: string) {
+  async function rotate(client: PoolClient, terminal: Device) {
     const access = token(), refresh = token()
-    await client.query("update public.terminal_devices set access_hash=$2, refresh_hash=$3, access_expires_at=now()+interval '15 minutes', refresh_expires_at=now()+interval '30 days' where id=$1", [deviceId, digest(access), digest(refresh)])
+    // A retry with the previous cookie replaces an unreachable child created by a lost response.
+    await client.query('update public.terminal_device_sessions set revoked_at=coalesce(revoked_at,now()) where rotated_from=$1 and revoked_at is null', [terminal.session_id])
+    await client.query('update public.terminal_device_sessions set rotated_at=coalesce(rotated_at,now()) where id=$1', [terminal.session_id])
+    await client.query("insert into public.terminal_device_sessions(store_id,device_id,access_hash,access_expires_at,refresh_hash,refresh_expires_at,rotated_from) values($1,$2,$3,now()+interval '15 minutes',$4,now()+interval '30 days',$5)", [terminal.store_id, terminal.id, digest(access), digest(refresh), terminal.session_id])
     return { access, refresh }
   }
   function cookies(res: Response, credentials: { access: string; refresh: string }) {
@@ -81,10 +85,19 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
     if (!name) fail(400, 'validation_failed', 'Enter a terminal name.')
     const result = await transaction(async client => {
       const userId = await manager(req, client, storeId)
-      // Reprovisioning this browser revokes its previous credential, retaining identity history.
-      await client.query('update public.terminal_devices set revoked_at=now() where refresh_hash=$1 and store_id=$2', [digest(cookie(req, names.refresh)), storeId])
+      // Possession of a valid refresh credential identifies this browser's previous installation,
+      // including when an administrator moves it to another managed store.
+      const presented = cookie(req, names.refresh)
+      if (/^[a-f0-9]{64}$/.test(presented)) {
+        const previous = await client.query<{ device_id: string }>('select device_id from public.terminal_device_sessions where refresh_hash=$1 and refresh_expires_at>now() and revoked_at is null for update', [digest(presented)])
+        if (previous.rows[0]) {
+          await client.query('update public.terminal_devices set revoked_at=coalesce(revoked_at,now()) where id=$1', [previous.rows[0].device_id])
+          await client.query('update public.terminal_device_sessions set revoked_at=coalesce(revoked_at,now()) where device_id=$1', [previous.rows[0].device_id])
+        }
+      }
       const id = randomUUID(), access = token(), refresh = token()
-      const { rows } = await client.query<Device>("insert into public.terminal_devices(id,store_id,name,receipt_prefix,provisioned_by,access_hash,access_expires_at,refresh_hash,refresh_expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,now()+interval '30 days') returning *", [id, storeId, name, `${id.toUpperCase()}-`, userId, digest(access), digest(refresh)])
+      const { rows } = await client.query<Device>('insert into public.terminal_devices(id,store_id,name,receipt_prefix,provisioned_by) values($1,$2,$3,$4,$5) returning *', [id, storeId, name, `${id.toUpperCase()}-`, userId])
+      await client.query("insert into public.terminal_device_sessions(store_id,device_id,access_hash,access_expires_at,refresh_hash,refresh_expires_at) values($1,$2,$3,now()+interval '15 minutes',$4,now()+interval '30 days')", [storeId, id, digest(access), digest(refresh)])
       return { projection: await snapshot(client, rows[0]), credentials: { access, refresh } }
     })
     cookies(res, result.credentials); setCookie(res, names.cashier, '', 0)
@@ -126,6 +139,7 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
       await manager(req, client, storeId)
       const result = await client.query('update public.terminal_devices set revoked_at=coalesce(revoked_at,now()) where id=$1 and store_id=$2', [id, storeId])
       if (!result.rowCount) fail(404, 'device_not_found', 'Terminal not found in this store.')
+      await client.query('update public.terminal_device_sessions set revoked_at=coalesce(revoked_at,now()) where device_id=$1 and store_id=$2', [id, storeId])
     })
     res.status(204).end()
   })
@@ -156,7 +170,7 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
   router.post('/auth/refresh', async (req, res) => {
     const result = await transaction(async client => {
       const terminal = await device(req, client, true)
-      const credentials = await rotate(client, terminal.id)
+      const credentials = await rotate(client, terminal)
       const cashierToken = token()
       const session = await client.query("update public.terminal_cashier_sessions s set token_hash=$3,last_server_validated_at=now(),expires_at=now()+interval '15 minutes' from public.terminal_employees e where s.device_id=$1 and s.token_hash=$2 and s.expires_at>now() and e.id=s.employee_id and e.store_id=s.store_id and e.active and e.permission_version=s.permission_version returning s.employee_id,s.permission_version,s.logged_in_at,s.last_server_validated_at", [terminal.id, digest(cookie(req, names.cashier)), digest(cashierToken)])
       return { credentials, cashierToken, projection: { ...await snapshot(client, terminal), session: session.rows[0] } }

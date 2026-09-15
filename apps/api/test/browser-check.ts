@@ -20,6 +20,7 @@ await db.exec(`create role anon; create role authenticated; create role service_
   create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
 await db.exec((await readFile(root + 'supabase/migrations/202609130001_auth_and_stores.sql', 'utf8')).replace('create extension if not exists pgcrypto;', ''))
 await db.exec(await readFile(root + 'supabase/migrations/202609150001_terminal_employee_access.sql', 'utf8'))
+await db.exec(await readFile(root + 'supabase/migrations/202609150002_terminal_device_sessions.sql', 'utf8'))
 const owner = randomUUID(), store = randomUUID()
 await db.query('insert into auth.users(id) values($1)', [owner])
 await db.query("insert into public.stores(id,name,code,created_by) values($1,'Demo General','browser-test',$2)", [store, owner])
