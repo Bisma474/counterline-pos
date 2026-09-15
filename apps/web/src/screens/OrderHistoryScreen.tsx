@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { formatCents } from '../../../../packages/domain/src/money'
 import { posDb, type LocalOrder, type LocalOrderItem, type LocalPayment } from '../lib/db'
-import { pushPendingOrders } from '../lib/order-sync'
+import { pushPendingOrders, retryOrder } from '../lib/order-sync'
 
 export function OrderHistoryScreen() {
   const location = useLocation()
@@ -32,6 +32,7 @@ export function OrderHistoryScreen() {
     <div className="history-list">{visible.map(order => <article key={order.id}><div><strong>{order.receipt_number}</strong><small>{new Date(order.client_generated_at).toLocaleString()}</small></div>
       <b>{formatCents(order.total_cents, order.currency)}</b><span className={`order-state ${order.sync_status}`}>{order.sync_status === 'failed' ? 'Rejected / needs review' : order.sync_status === 'synced' ? 'Synced' : 'Pending sync'}</span>
       <button type="button" onClick={() => void show(order)}>Details</button>
+      {order.sync_status === 'pending' && order.failure_reason && <button type="button" onClick={() => void retryOrder(order.id).then(refresh)}>Retry now</button>}
       {order.failure_reason && <p className="history-reason">{order.failure_reason}</p>}</article>)}</div>
     {selected && <div className="history-detail"><button type="button" onClick={() => setSelected(null)}>Close</button><h2>{selected.order.receipt_number}</h2>
       <p>{selected.order.store_name_snapshot} · {new Date(selected.order.client_generated_at).toLocaleString()}</p>
