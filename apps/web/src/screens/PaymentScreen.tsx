@@ -49,7 +49,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
     finally { inProgress.current = false; setBusy(false) }
   }
   return <section className="payment-page"><div className="pay-main"><Link to={terminal ? '/pos/register' : '/register'}>← Back to sale</Link><p className="kicker">PAYMENT</p>
-    <h1>Payment</h1>{selectedCustomer && <p className="screen-note">Customer: {selectedCustomer.name} · +{selectedCustomer.phone_normalized ?? 'No phone'}</p>}{!items.length && <p className="form-notice error">Your cart is empty. Add products before taking payment.</p>}
+    <h1>Payment</h1>{selectedCustomer && <p className="screen-note">Customer: {selectedCustomer.name} · {selectedCustomer.phone_normalized ? `+${selectedCustomer.phone_normalized}` : 'No phone'}</p>}{!items.length && <p className="form-notice error">Your cart is empty. Add products before taking payment.</p>}
     <fieldset className="methods"><legend>Select payment method</legend>
       <button type="button" className={method === 'cash' ? 'selected' : ''} onClick={() => setMethod('cash')}>Cash</button>
       <button type="button" className={method === 'card' ? 'selected' : ''} onClick={() => setMethod('card')}>Card (external)</button>
