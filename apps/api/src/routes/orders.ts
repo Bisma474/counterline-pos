@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { db } from '../db.js'
 import { ApiError, requireStoreMember, sendApiError } from './auth.js'
 import { boundedInteger, calculateLine, MAX_CENTS, sumLines } from '../../../../packages/domain/src/money.js'
-import { requireCashierTerminal } from '../terminal-auth/routes.js'
+import { requireDeviceTerminal } from '../terminal-auth/routes.js'
 
 export const ordersRouter = Router()
 export const terminalOrdersRouter = Router()
@@ -34,6 +34,7 @@ export function validateOperation(raw: unknown) {
   const items = body.items
   if (!Array.isArray(items) || items.length < 1 || items.length > 100) throw new ApiError(422, 'validation_failed', 'An order needs 1 to 100 items.')
   const storeId = id(order.store_id, 'Store ID')
+  const customerId = order.customer_id === null || order.customer_id === undefined ? null : id(order.customer_id, 'Customer ID')
   const operationId = id(body.operation_id, 'Operation ID')
   if (operationId !== id(order.id, 'Order ID')) throw new ApiError(422, 'validation_failed', 'Order ID must match operation ID.')
   const parsedItems = items.map((rawItem, index) => {
@@ -81,7 +82,7 @@ export function validateOperation(raw: unknown) {
     throw new ApiError(422, 'validation_failed', 'Catalog version is invalid.')
   }
   return { operationId, storeId, items: parsedItems, totals,
-    order: { receipt_number: text(order.receipt_number, 'Receipt number', 100),
+    order: { customer_id: customerId, receipt_number: text(order.receipt_number, 'Receipt number', 100),
       catalog_version: order.catalog_version as number,
       client_generated_at: generatedAt },
     payment: { id: id(payment.id, 'Payment ID'), method, amount_cents: amount,
@@ -93,7 +94,7 @@ async function push(req: import('express').Request, res: import('express').Respo
   try {
     const operation = validateOperation(req.body)
     if (terminal) {
-      const session = await requireCashierTerminal(req, db)
+      const session = await requireDeviceTerminal(req, db)
       if (session.storeId !== operation.storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
     } else await requireStoreMember(req, operation.storeId)
     const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex')
@@ -114,11 +115,15 @@ async function push(req: import('express').Request, res: import('express').Respo
       const productIds = [...new Set(operation.items.map(item => item.product_id))]
       const products = await client.query('select id from public.pos_products where store_id=$1 and id = any($2::uuid[])', [operation.storeId, productIds])
       if (products.rowCount !== productIds.length) throw new ApiError(422, 'cross_store_reference', 'An item refers to a product outside this store.')
+      if (operation.order.customer_id) {
+        const customer = await client.query('select 1 from public.pos_customers where store_id=$1 and id=$2', [operation.storeId, operation.order.customer_id])
+        if (!customer.rowCount) throw new ApiError(422, 'cross_store_reference', 'Customer is not accepted for this store yet.')
+      }
       await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
-        subtotal_cents,tax_cents,total_cents,catalog_version,client_generated_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        subtotal_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [operation.operationId, operation.storeId, operation.order.receipt_number, store.rows[0].currency,
           store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.taxCents,
-          operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at])
+          operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id])
       for (const item of operation.items) {
         await client.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
           snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,subtotal_cents,tax_cents,total_cents)

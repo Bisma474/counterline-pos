@@ -13,11 +13,28 @@ function nextAttempt(attempt: number): string {
   return new Date(Date.now() + delaySeconds * 1000).toISOString()
 }
 async function claimOne(storeId: string): Promise<OutboxEntry | undefined> {
-  return posDb.transaction('rw', posDb.outbox, async () => {
+  return posDb.transaction('rw', posDb.outbox, posDb.orders, async () => {
     const now = new Date().toISOString()
     const entries = await posDb.outbox.where('store_id').equals(storeId).toArray()
-    const entry = entries.find(row => (row.status === 'pending' || row.failure_kind === 'connectivity') &&
-      row.next_attempt_at <= now && (!row.lease_expires_at || row.lease_expires_at < now))
+    const byOperation = new Map(entries.map(row => [row.operation_id, row]))
+    const ordered = entries.sort((a, b) => (a.entity_type === 'customer' ? 0 : 1) - (b.entity_type === 'customer' ? 0 : 1) || a.created_at.localeCompare(b.created_at))
+    let entry: OutboxEntry | undefined
+    for (const row of ordered) {
+      if (!(row.status === 'pending' || row.failure_kind === 'connectivity' || row.failure_kind === 'dependency') ||
+          row.next_attempt_at > now || (row.lease_expires_at && row.lease_expires_at >= now)) continue
+      const parent = (row.depends_on ?? []).map(id => byOperation.get(id))
+      if (parent.some(dependency => !dependency || dependency.status !== 'synced')) {
+        if (row.id && row.entity_type !== 'customer') {
+          const reason = parent.some(dependency => dependency?.failure_kind === 'validation')
+            ? 'Customer creation was rejected. Keep this paid sale for review.' : 'Waiting for customer upload before this sale can sync.'
+          await posDb.outbox.update(row.id, { status: 'failed', failure_kind: 'dependency', reason_code: 'dependency_pending', failure_reason: reason })
+          await posDb.orders.update(row.order_id, { sync_status: 'pending', failure_reason: reason })
+        }
+        continue
+      }
+      entry = row
+      break
+    }
     if (!entry?.id) return undefined
     const claimed = { ...entry, lease_owner: owner, lease_expires_at: new Date(Date.now() + 30_000).toISOString(),
       attempt_count: entry.attempt_count + 1 }
@@ -27,14 +44,17 @@ async function claimOne(storeId: string): Promise<OutboxEntry | undefined> {
 }
 async function finish(entry: OutboxEntry, accepted: boolean, code: string | null, message: string | null,
   checkpoint: string | null, failureKind: OutboxEntry['failure_kind']) {
-  await posDb.transaction('rw', posDb.outbox, posDb.orders, posDb.stock_adjustments, async () => {
+  await posDb.transaction('rw', posDb.outbox, posDb.orders, posDb.customers, posDb.stock_adjustments, async () => {
     const current = await posDb.outbox.get(entry.id!)
     if (!current || current.lease_owner !== owner) return
     await posDb.outbox.put({ ...current, status: accepted ? 'synced' : 'failed', failure_kind: failureKind,
       reason_code: code, failure_reason: message, accepted_checkpoint: checkpoint,
       lease_owner: null, lease_expires_at: null,
       next_attempt_at: failureKind === 'connectivity' ? nextAttempt(current.attempt_count) : current.next_attempt_at })
-    await posDb.orders.update(entry.order_id, { sync_status: accepted ? 'synced' : failureKind === 'validation' ? 'failed' : 'pending',
+    if (entry.entity_type === 'customer') {
+      const payload = JSON.parse(entry.payload) as { customer: { id: string } }
+      await posDb.customers.update(payload.customer.id, { sync_status: accepted ? 'synced' : failureKind === 'validation' ? 'failed' : 'pending', failure_reason: message })
+    } else await posDb.orders.update(entry.order_id, { sync_status: accepted ? 'synced' : failureKind === 'validation' ? 'failed' : 'pending',
       accepted_checkpoint: checkpoint, failure_reason: message })
     if (accepted) {
       const adjustments = await posDb.stock_adjustments.where('operation_id').equals(entry.operation_id).toArray()
@@ -52,7 +72,7 @@ export async function pushOrdersForStore(storeId: string, send: SendOperation): 
     try {
       const response = await send(entry)
       const body = response.body
-      if (response.ok && body.status === 'accepted' && body.operation_id === entry.operation_id &&
+      if (response.ok && (body.status === 'accepted' || body.status === 'replayed') && body.operation_id === entry.operation_id &&
         typeof body.accepted_checkpoint === 'string' && /^\d+$/.test(body.accepted_checkpoint)) {
         await finish(entry, true, null, null, body.accepted_checkpoint, null)
         accepted += 1
@@ -78,6 +98,9 @@ export async function retryOrderForStore(operationId: string, storeId: string, s
   if (!entry || entry.store_id !== storeId || entry.status === 'synced' || entry.failure_kind === 'validation') return
   await posDb.outbox.update(entry.id!, { status: 'pending', failure_kind: null, reason_code: null,
     failure_reason: null, next_attempt_at: new Date().toISOString(), lease_owner: null, lease_expires_at: null })
-  await posDb.orders.update(entry.order_id, { sync_status: 'pending', failure_reason: null })
+  if (entry.entity_type === 'customer') {
+    const payload = JSON.parse(entry.payload) as { customer: { id: string } }
+    await posDb.customers.update(payload.customer.id, { sync_status: 'pending', failure_reason: null })
+  } else await posDb.orders.update(entry.order_id, { sync_status: 'pending', failure_reason: null })
   await pushOrdersForStore(storeId, send)
 }

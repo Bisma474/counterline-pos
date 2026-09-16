@@ -3,6 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Dexie from 'dexie'
 import { completeLocalSale } from '../src/lib/checkout'
+import { createLocalCustomer, searchLocalCustomers } from '../src/lib/customer-local'
 import { posDb } from '../src/lib/db'
 import { pushOrdersForStore, retryOrderForStore } from '../src/lib/order-sync-core'
 import type { CartItem } from '../src/lib/pos-store'
@@ -114,5 +115,59 @@ test('an existing browser database upgrades queued orders with their store scope
   assert.equal((await posDb.outbox.where('operation_id').equals(id).first())?.store_id, storeId)
   assert.equal((await posDb.orders.where('[store_id+client_generated_at]')
     .between([storeId, Dexie.minKey], [storeId, Dexie.maxKey]).toArray()).length, 1)
+  await posDb.delete()
+})
+
+test('offline customer creation and attached sale survive reload; dependency uploads first', async () => {
+  await posDb.delete(); await posDb.open()
+  await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  const customer = await createLocalCustomer(storeId, '  Ada   North  ', '+92 300 1234567')
+  assert.equal(customer.name, 'Ada North')
+  assert.equal(customer.phone_normalized, '923001234567')
+  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, customer.id)
+  assert.equal((await posDb.orders.get(sale.operationId))?.customer_id, customer.id)
+  const queuedSale = await posDb.outbox.where('operation_id').equals(sale.operationId).first()
+  assert.deepEqual(queuedSale?.depends_on, [customer.creating_operation_id])
+  posDb.close(); await posDb.open()
+  assert.equal((await posDb.customers.get(customer.id))?.name, 'Ada North')
+  assert.equal((await posDb.orders.get(sale.operationId))?.customer_id, customer.id)
+  const sent: string[] = []
+  const send = async (entry: { entity_type?: string; operation_id: string }) => {
+    sent.push(entry.entity_type ?? 'order')
+    return { ok: true, status: 200, body: { status: 'accepted', operation_id: entry.operation_id, accepted_checkpoint: String(sent.length) } }
+  }
+  assert.equal(await pushOrdersForStore(storeId, send), 2)
+  assert.deepEqual(sent, ['customer', 'order'])
+  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'synced')
+  assert.equal((await posDb.customers.get(customer.id))?.sync_status, 'synced')
+  await posDb.delete()
+})
+
+test('failed customer upload leaves attached paid order queued and shows the dependency', async () => {
+  await posDb.delete(); await posDb.open()
+  await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  const customer = await createLocalCustomer(storeId, 'Bea South', '+923001234567')
+  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, customer.id)
+  const sent: string[] = []
+  await pushOrdersForStore(storeId, async entry => { sent.push(entry.entity_type ?? 'order'); return { ok: false, status: 422, body: { code: 'validation_failed', message: 'Customer needs review.' } } })
+  assert.deepEqual(sent, ['customer'])
+  assert.equal((await posDb.orders.get(sale.operationId))?.customer_id, customer.id)
+  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'pending')
+  assert.match((await posDb.orders.get(sale.operationId))?.failure_reason ?? '', /Waiting|rejected/)
+  assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.failure_kind, 'dependency')
+  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, null)
+  await posDb.delete()
+})
+
+test('duplicate normalized phones stay separate and checkout rejects cross-store customer', async () => {
+  await posDb.delete(); await posDb.open()
+  await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  const first = await createLocalCustomer(storeId, 'One', '+923001234567')
+  const second = await createLocalCustomer(storeId, 'Two', '+92 300 1234567')
+  assert.notEqual(first.id, second.id)
+  assert.equal((await searchLocalCustomers(storeId, '+923001234567')).length, 2)
+  const other = await createLocalCustomer('920f23e0-fb21-4ab8-ae7c-2454f3f9031c', 'Other', '+923001234567')
+  await assert.rejects(completeLocalSale(cart, storeId, 'cash', 500, null, other.id), /does not belong/)
+  assert.equal(await posDb.orders.count(), 0)
   await posDb.delete()
 })

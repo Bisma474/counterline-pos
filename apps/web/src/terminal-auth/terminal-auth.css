@@ -20,6 +20,7 @@
 .cashier-pos-sidebar footer small { padding-left: 15px; color: #92a49e; }
 .cashier-online-dot,.cashier-pos-status i,.cashier-online i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #35bd74; }
 .cashier-pos-main { min-width: 0; display: grid; grid-template-rows: 57px minmax(0, 1fr) auto; padding: 0 14px; }
+.cashier-pos-mobile-nav { display: none; }
 .cashier-pos-topbar { display: flex; align-items: center; justify-content: flex-end; gap: 20px; border-bottom: 1px solid #e2ddd3; color: #344054; font-size: 11px; }
 .cashier-online { color: #1d8b4c; }
 .cashier-profile { display: grid; padding-left: 14px; border-left: 1px solid #ded8ce; color: #17212d; font-weight: 800; }
@@ -27,6 +28,7 @@
 .cashier-pos-status { display: flex; gap: 20px; align-items: center; min-height: 33px; padding: 0 8px; margin: 0 6px; border-top: 1px solid #e6e0d7; color: #667085; font-size: 10px; }
 .cashier-pos-status span:first-child { color: #1d8b4c; }
 @media (max-width: 800px) { .cashier-pos-shell { display: block; } .cashier-pos-sidebar { display: none; } .cashier-pos-main { padding: 0 9px; } .cashier-pos-topbar { gap: 9px; overflow: hidden; white-space: nowrap; } .cashier-pos-topbar > span:nth-child(3) { display: none; } .cashier-pos-status { overflow: auto; white-space: nowrap; } }
+@media (max-width: 800px) { .cashier-pos-main { grid-template-rows: 57px auto minmax(0, 1fr) auto; } .cashier-pos-mobile-nav { display: flex; gap: 8px; padding: 9px 4px; border-bottom: 1px solid #e5dfd1; } .cashier-pos-mobile-nav a { color: #203d31; text-decoration: none; border-radius: 6px; padding: 9px 14px; font-weight: 700; } .cashier-pos-mobile-nav a.active { background: #385644; color: #fff; } .cashier-pos-mobile-nav a:focus-visible { outline: 3px solid #cfa848; outline-offset: 2px; } }
 
 .team-members { margin-top: 16px; overflow: hidden; border: 1px solid #e5dfd6; border-radius: 14px; background: #fffdf9; }
 .team-members h3 { margin: 0; padding: 15px 18px; border-bottom: 1px solid #ebe7df; font-size: 16px; }

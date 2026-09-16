@@ -220,7 +220,7 @@ paths:
     post:
       operationId: pushTerminalOrder
       summary: Save one cashier-terminal order idempotently
-      security: [{ deviceAccess: [] }, { cashierSession: [] }]
+      security: [{ deviceAccess: [] }]
       requestBody:
         required: true
         content:
@@ -230,8 +230,69 @@ paths:
               required: [operation_id, order, items, payment]
       responses:
         '200': { description: Accepted order or identical replay }
-        '401': { description: Terminal or cashier session is missing, expired, revoked, or permission changed }
+        '401': { description: Device session is missing, expired, or revoked; queued sales remain local }
         '403': { description: Payload store does not match the terminal store }
+        default: { $ref: '#/components/responses/Error' }
+  /customers:
+    get:
+      operationId: searchManagementCustomers
+      summary: Search customers in an active owner/manager store membership
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^\+[1-9][0-9]{3,14}$' } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200': { description: Store-scoped customer matches and next cursor, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerSearch' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /pos/customers:
+    get:
+      operationId: searchCashierCustomers
+      summary: Phone search only; never returns an unfiltered directory
+      security: [{ deviceAccess: [], cashierSession: [] }]
+      parameters:
+        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^\+[1-9][0-9]{3,14}$' } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200': { description: Bounded store-scoped customer matches, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerSearch' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /customers/push:
+    post:
+      operationId: pushManagementCustomer
+      summary: Idempotently create one store customer
+      security: [{ ownerBearer: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerCreateOperation' } } } }
+      responses:
+        '200': { description: Accepted or replayed durable result, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPushResult' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /pos/customers/push:
+    post:
+      operationId: pushTerminalCustomer
+      summary: Upload a queued customer with device authorization even if its cashier logged out
+      security: [{ deviceAccess: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerCreateOperation' } } } }
+      responses:
+        '200': { description: Accepted or replayed durable result, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPushResult' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
         default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
@@ -246,6 +307,44 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
   schemas:
+    Customer:
+      type: object
+      required: [id, store_id, name, phone_normalized]
+      properties:
+        id: { type: string, format: uuid }
+        store_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        phone_normalized: { type: string, nullable: true, pattern: '^[1-9][0-9]{3,14}$' }
+    CustomerSearch:
+      type: object
+      required: [customers, next_cursor]
+      properties:
+        customers: { type: array, items: { $ref: '#/components/schemas/Customer' } }
+        next_cursor: { type: string, nullable: true, description: Opaque pagination cursor; null means no further page. }
+    CustomerCreateOperation:
+      type: object
+      required: [operation_id, entity_type, schema_version, customer]
+      properties:
+        operation_id: { type: string, format: uuid, description: Stable across all retries. }
+        entity_type: { type: string, enum: [customer] }
+        schema_version: { type: integer, enum: [1] }
+        customer:
+          type: object
+          required: [id, store_id, name, phone_normalized, client_generated_at]
+          properties:
+            id: { type: string, format: uuid, description: Stable client-generated customer UUID. }
+            store_id: { type: string, format: uuid, description: Must equal authenticated store; never grants authorization. }
+            name: { type: string, minLength: 1, maxLength: 160 }
+            phone_normalized: { type: string, nullable: true, pattern: '^[1-9][0-9]{3,14}$' }
+            client_generated_at: { type: string, format: date-time }
+    CustomerPushResult:
+      type: object
+      required: [status, operation_id, customer_id, accepted_checkpoint]
+      properties:
+        status: { type: string, enum: [accepted, replayed] }
+        operation_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        accepted_checkpoint: { type: string, pattern: '^[0-9]+$' }
     Error:
       type: object
       required: [code, message]

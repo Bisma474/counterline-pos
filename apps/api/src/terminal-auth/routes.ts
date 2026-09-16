@@ -21,6 +21,18 @@ function cookie(req: Request, name: string) {
   return req.headers.cookie?.split(';').map(part => part.trim()).find(part => part.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''
 }
 export interface CashierTerminalContext { storeId: string; deviceId: string; employeeId: string }
+export interface DeviceTerminalContext { storeId: string; deviceId: string }
+/** A device may upload sales/customer records after the originating cashier logs out. */
+export async function requireDeviceTerminal(req: Request, pool: Pool): Promise<DeviceTerminalContext> {
+  const access = cookie(req, 'terminal_access')
+  if (!/^[a-f0-9]{64}$/.test(access)) throw new ApiError(401, 'authentication_required', 'Terminal access is required to resume sync.')
+  const result = await pool.query<DeviceTerminalContext>(`select d.store_id "storeId", d.id "deviceId"
+    from public.terminal_device_sessions ds
+    join public.terminal_devices d on d.id=ds.device_id and d.store_id=ds.store_id and d.revoked_at is null
+    where ds.access_hash=$1 and ds.access_expires_at>now() and ds.revoked_at is null and ds.rotated_at is null`, [digest(access)])
+  if (!result.rows[0]) throw new ApiError(401, 'authentication_required', 'Terminal access expired. Ask a manager to renew this device.')
+  return result.rows[0]
+}
 /** Verifies the two HttpOnly terminal cookies for POS routes. */
 export async function requireCashierTerminal(req: Request, pool: Pool): Promise<CashierTerminalContext> {
   const access = cookie(req, 'terminal_access'), cashier = cookie(req, 'terminal_cashier')

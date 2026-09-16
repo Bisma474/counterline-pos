@@ -3,7 +3,8 @@ import type { OutboxEntry } from './db'
 import { pushOrdersForStore, retryOrderForStore, type PushReply } from './order-sync-core'
 
 async function sendOrder(entry: OutboxEntry, terminal = false): Promise<PushReply> {
-  const response = await fetch(`${configuredApiUrl()}${terminal ? '/pos/orders' : '/orders'}/push`, {
+  const entity = entry.entity_type === 'customer' ? 'customers' : 'orders'
+  const response = await fetch(`${configuredApiUrl()}${terminal ? `/pos/${entity}` : `/${entity}`}/push`, {
     method: 'POST', credentials: terminal ? 'include' : 'same-origin',
     headers: terminal ? { 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json', Authorization: `Bearer ${await accessToken()}` },
     body: entry.payload, signal: AbortSignal.timeout(20_000),

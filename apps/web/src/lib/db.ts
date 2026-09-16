@@ -74,6 +74,18 @@ export interface LocalOrder {
   timezone_snapshot: string
   accepted_checkpoint: string | null
   failure_reason: string | null
+  customer_id?: string | null
+}
+
+export interface LocalCustomer {
+  id: string
+  store_id: string
+  name: string
+  phone_normalized: string | null
+  client_generated_at: string
+  creating_operation_id: string | null
+  sync_status: SyncStatus
+  failure_reason: string | null
 }
 
 export interface LocalOrderItem {
@@ -112,7 +124,7 @@ export interface OutboxEntry {
   order_id: string
   status: OutboxStatus
   failure_reason: string | null
-  failure_kind: 'connectivity' | 'authentication' | 'validation' | null
+  failure_kind: 'connectivity' | 'authentication' | 'dependency' | 'validation' | null
   reason_code: string | null
   attempt_count: number
   lease_owner: string | null
@@ -121,6 +133,8 @@ export interface OutboxEntry {
   next_attempt_at: string  // ISO 8601
   created_at: string       // ISO 8601
   payload: string          // JSON string of OrderOperation
+  entity_type?: 'order' | 'customer'
+  depends_on?: string[]
 }
 
 export interface SyncMetadata {
@@ -146,6 +160,7 @@ export class CounterlineDatabase extends Dexie {
   products!: EntityTable<LocalProduct, 'id'>
   server_stock!: EntityTable<LocalStock, 'product_id'>
   orders!: EntityTable<LocalOrder, 'id'>
+  customers!: EntityTable<LocalCustomer, 'id'>
   order_items!: EntityTable<LocalOrderItem, 'id'>
   payments!: EntityTable<LocalPayment, 'id'>
   outbox!: EntityTable<OutboxEntry, 'id'>
@@ -184,6 +199,17 @@ export class CounterlineDatabase extends Dexie {
       for (const entry of await outbox.toArray()) {
         const order = await orders.get(entry.order_id)
         await outbox.update(entry.id!, { store_id: order?.store_id ?? '' })
+      }
+    })
+
+    this.version(4).stores({
+      customers: 'id, store_id, [store_id+phone_normalized], creating_operation_id, sync_status',
+      outbox: '++id, &operation_id, status, next_attempt_at, store_id, entity_type',
+      orders: 'id, &receipt_number, client_generated_at, sync_status, store_id, [store_id+client_generated_at], customer_id',
+    }).upgrade(async transaction => {
+      const outbox = transaction.table<OutboxEntry, number>('outbox')
+      for (const entry of await outbox.toArray()) {
+        await outbox.update(entry.id!, { entity_type: 'order', depends_on: [] })
       }
     })
   }
