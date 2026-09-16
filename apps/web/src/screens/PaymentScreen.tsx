@@ -39,7 +39,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
       const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null, selectedCustomer?.id ?? null)
       clearCart()
       void pushPendingOrders(storeId, terminal).catch(() => undefined)
-      navigate(terminal ? '/pos/register' : '/orders', { replace: true, state: { completed: result.receiptNumber } })
+      navigate(`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(result.operationId)}`, { replace: true, state: { committedOrderId: result.operationId } })
     } catch (reason) {
       const failure = reason instanceof Error ? reason.message : 'The sale could not be saved.'
       setError(method === 'card' && cardConfirmed
