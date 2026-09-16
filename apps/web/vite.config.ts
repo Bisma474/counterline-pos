@@ -10,7 +10,7 @@ export default defineConfig({
     workbox: {
       globPatterns: ['**/*.{js,css,html}'],
       navigateFallback: 'index.html',
-      navigateFallbackAllowlist: [/^\/pos\/(login|register|payment|customers)\/?$/],
+      navigateFallbackAllowlist: [/^\/(?:dashboard|reports)\/?$/, /^\/pos\/(?:login|dashboard|register|payment|customers)\/?$/],
       cleanupOutdatedCaches: false,
     },
   })],
