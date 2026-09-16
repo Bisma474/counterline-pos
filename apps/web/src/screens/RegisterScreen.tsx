@@ -6,6 +6,9 @@ import { posDb, type LocalCategory, type LocalProduct, type LocalStock } from '.
 import { pushPendingOrders } from '../lib/order-sync'
 import { usePosStore } from '../lib/pos-store'
 import { currentAccess } from '../terminal-auth/cache'
+import { requireSupabase } from '../lib/supabase'
+import { CustomerSelector } from './CustomerScreen'
+import { liveQuery } from 'dexie'
 
 export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const [products, setProducts] = useState<LocalProduct[]>([])
@@ -20,15 +23,45 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [customerOpen, setCustomerOpen] = useState(false)
+  const [customerSyncWarning, setCustomerSyncWarning] = useState('')
+  const [customerAuthorized, setCustomerAuthorized] = useState(terminal)
   const cart = usePosStore(state => state.items)
   const addItem = usePosStore(state => state.addItem)
   const increment = usePosStore(state => state.incrementItem)
   const decrement = usePosStore(state => state.decrementItem)
   const remove = usePosStore(state => state.removeItem)
   const clear = usePosStore(state => state.clearCart)
+  const selectedCustomer = usePosStore(state => state.selectedCustomer)
+  const selectCustomer = usePosStore(state => state.selectCustomer)
   const setStoreContext = usePosStore(state => state.setStoreContext)
   const setCatalogStatus = usePosStore(state => state.setCatalogStatus)
   const totals = usePosStore(state => state.totals)
+  useEffect(() => {
+    if (!storeId) return
+    const subscription = liveQuery(() => posDb.outbox.where('store_id').equals(storeId).toArray()).subscribe(entries => {
+      const waiting = entries.filter(entry => entry.entity_type === 'order' && (entry.depends_on?.length ?? 0) > 0 && entry.status !== 'synced')
+      const blocked = waiting.find(entry => entry.failure_kind === 'dependency')
+      setCustomerSyncWarning(waiting.length ? `${waiting.length} completed sale${waiting.length === 1 ? '' : 's'} waiting for customer sync. ${blocked?.failure_reason ?? 'Customer upload will run before linked sales.'}` : '')
+    })
+    return () => subscription.unsubscribe()
+  }, [storeId])
+  useEffect(() => {
+    const id = selectedCustomer?.id
+    if (!id) return
+    const subscription = liveQuery(() => posDb.customers.get(id)).subscribe(customer => {
+      if (customer && usePosStore.getState().selectedCustomer?.id === id && usePosStore.getState().selectedCustomer?.sync_status !== customer.sync_status) selectCustomer(customer)
+    })
+    return () => subscription.unsubscribe()
+  }, [selectedCustomer?.id, selectCustomer])
+  useEffect(() => {
+    if (!storeId) return
+    let active = true
+    const sync = () => { if (active && navigator.onLine) void pushPendingOrders(storeId, terminal).catch(() => undefined) }
+    window.addEventListener('online', sync)
+    const interval = window.setInterval(sync, 15_000)
+    return () => { active = false; window.removeEventListener('online', sync); window.clearInterval(interval) }
+  }, [storeId, terminal])
 
   useEffect(() => {
     let active = true
@@ -40,6 +73,17 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
         if (!active) return
         setStoreId(id)
         setStoreContext(id, '')
+        if (!terminal && navigator.onLine) {
+          try {
+            const client = requireSupabase()
+            const { data: { user } } = await client.auth.getUser()
+            if (user) {
+              const { data: memberships } = await client.from('store_memberships').select('role').eq('user_id', user.id).eq('store_id', id).eq('active', true).limit(1)
+              const allowed = memberships?.[0]?.role === 'owner' || memberships?.[0]?.role === 'manager'
+              if (active) { setCustomerAuthorized(allowed); if (!allowed) selectCustomer(null) }
+            }
+          } catch { if (active) setCustomerAuthorized(false) }
+        }
         if (terminal) await posDb.sync_metadata.put({ key: `receipt_prefix:${id}`, value: terminalAccess!.cache.device.receipt_prefix })
         const cached = await posDb.store_config.get(id)
         if (cached) setStoreContext(id, cached.name)
@@ -109,6 +153,8 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       </button>)}</div>
     </div>
     <aside className="sale-cart"><div className="cart-title"><h2>Current Sale</h2><button className="text-action" type="button" onClick={clear} disabled={!cart.length}>Clear cart</button></div>
+      <div className="crm-cart-customer">{selectedCustomer && customerAuthorized ? <><strong>{selectedCustomer.name}</strong><small>{selectedCustomer.phone_normalized ? `+${selectedCustomer.phone_normalized}` : 'No phone'} · {selectedCustomer.sync_status === 'synced' ? 'Saved' : 'Pending sync'}</small><div className="crm-cart-customer-actions"><button type="button" className="text-action" onClick={() => setCustomerOpen(true)}>Change customer</button><button type="button" className="text-action" onClick={() => selectCustomer(null)}>Remove</button></div></> : <><button type="button" className="text-action" disabled={!storeId || !customerAuthorized} onClick={() => setCustomerOpen(true)}>Add customer</button>{storeId && !customerAuthorized && <small>Customer access requires validated management membership.</small>}</>}</div>
+      {customerSyncWarning && <p className="crm-sync-note" role="status">{customerSyncWarning}</p>}
       {!cart.length && <p className="empty-cart">Add a product to start a sale.</p>}
       {cart.map(item => <div className="cart-line" key={item.productId}><span><strong>{item.name}</strong><small>{formatCents(item.unitPriceCents, currency)} each</small></span>
         <div className="quantity"><button type="button" aria-label={`Remove one ${item.name}`} onClick={() => decrement(item.productId)}>−</button><b>{item.quantity}</b>
@@ -120,5 +166,6 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       <Link className={`cta ${!cart.length || cartError || !storeId ? 'cta-disabled' : ''}`} to={cart.length && !cartError && storeId ? terminal ? '/pos/payment' : '/payment' : terminal ? '/pos/register' : '/register'}
         aria-disabled={!cart.length || Boolean(cartError) || !storeId}>Proceed to payment <b aria-hidden="true">→</b></Link>
     </aside>
+    {customerOpen && storeId && customerAuthorized && <CustomerSelector storeId={storeId} terminal={terminal} onClose={() => setCustomerOpen(false)} />}
   </section>
 }

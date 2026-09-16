@@ -8,7 +8,7 @@
     ".": "./src/money.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test src/money.test.ts"
+    "test": "node --experimental-strip-types --test src/*.test.ts"
   },
   "devDependencies": {
     "typescript": "~5.7.2"

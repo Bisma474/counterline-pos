@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import { calculateLine, sumLines } from '../../../../packages/domain/src/money'
+import type { LocalCustomer } from './db'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +45,8 @@ export interface PosStore {
   incrementItem: (productId: string) => void
   decrementItem: (productId: string) => void
   clearCart: () => void
+  selectedCustomer: LocalCustomer | null
+  selectCustomer: (customer: LocalCustomer | null) => void
 
   // Totals (derived)
   totals: () => CartTotals
@@ -65,9 +68,12 @@ export const usePosStore = create<PosStore>((set, get) => ({
   setStoreContext: (storeId, storeName) => set(state => ({
     storeId, storeName,
     items: state.storeId && state.storeId !== storeId ? [] : state.items,
+    selectedCustomer: state.storeId && state.storeId !== storeId ? null : state.selectedCustomer,
   })),
 
   items: [],
+  selectedCustomer: null,
+  selectCustomer: customer => set({ selectedCustomer: customer }),
 
   addItem: (product) =>
     set((state) => {
@@ -108,7 +114,7 @@ export const usePosStore = create<PosStore>((set, get) => ({
       }
     }),
 
-  clearCart: () => set({ items: [] }),
+  clearCart: () => set({ items: [], selectedCustomer: null }),
 
   totals: () => {
     const { items } = get()
