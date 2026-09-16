@@ -6,6 +6,7 @@ import { posDb, type StoreConfig } from '../lib/db'
 import { resolveFinancialAccess } from '../lib/management-access'
 import { calculateLocalSalesReport, todayInTimezone, type LocalSalesReport } from '../lib/reporting'
 import { currentAccess } from '../terminal-auth/cache'
+import { configuredApiUrl } from '../lib/catalog'
 import './reporting.css'
 
 interface ReportState { config: StoreConfig; report: LocalSalesReport }
@@ -71,6 +72,7 @@ export function ReportsScreen() {
 
 export function CashierDashboardScreen() {
   const [state, setState] = useState<{ cashier: string; terminal: string; storeId: string; online: boolean; pending: number; rejected: number }>()
+  const [apiReachable, setApiReachable] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
     let active = true
@@ -91,12 +93,26 @@ export function CashierDashboardScreen() {
     window.addEventListener('online', connection); window.addEventListener('offline', connection)
     return () => { active = false; subscription?.unsubscribe(); window.removeEventListener('online', connection); window.removeEventListener('offline', connection); setState(undefined) }
   }, [])
+  useEffect(() => {
+    let active = true
+    const checkApi = async () => {
+      if (!navigator.onLine) { if (active) setApiReachable(false); return }
+      try {
+        const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
+        if (active) setApiReachable(response.ok)
+      } catch { if (active) setApiReachable(false) }
+    }
+    void checkApi()
+    const timer = window.setInterval(() => void checkApi(), 15_000)
+    window.addEventListener('online', checkApi); window.addEventListener('offline', checkApi)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('online', checkApi); window.removeEventListener('offline', checkApi) }
+  }, [])
   if (error) return <AccessMessage message={error} />
   if (!state) return <section className="reporting-page" role="status">Loading terminal status…</section>
   return <section className="reporting-page cashier-dashboard"><header className="reporting-heading"><div><p className="kicker">CASHIER WORKSPACE</p><h1>Ready for the counter.</h1><p>Operational status for this terminal. Financial summaries are available to authorized management.</p></div><Link className="report-primary" to="/pos/register">Open register <span aria-hidden="true">→</span></Link></header><div className="operational-grid">
     <ReportCard label="Active cashier" value={state.cashier} detail="Current authorized session" />
     <ReportCard label="Terminal" value={state.terminal} detail="Provisioned device" />
-    <ReportCard label="Connectivity" value={state.online ? 'Online' : 'Offline'} detail={state.online ? 'Sync is available' : 'Sales remain local'} />
+    <ReportCard label="Connectivity" value={!state.online ? 'Offline' : apiReachable === null ? 'Checking API' : apiReachable ? 'API reachable' : 'API unreachable'} detail={apiReachable ? 'Sync is available' : 'Sales remain local'} />
     <ReportCard label="Pending sync" value={state.pending} detail={state.rejected ? `${state.rejected} need review` : 'No rejected operations'} />
   </div>{state.rejected > 0 && <p className="operation-warning" role="status">{state.rejected} sync operation{state.rejected === 1 ? '' : 's'} need review. Ask a manager for help.</p>}</section>
 }

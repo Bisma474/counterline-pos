@@ -7,11 +7,12 @@ import { OrderHistoryScreen } from './screens/OrderHistoryScreen'
 import { PaymentScreen } from './screens/PaymentScreen'
 import { RegisterScreen } from './screens/RegisterScreen'
 import { SettingsOverview } from './terminal-auth/SettingsOverview'
-import { TerminalState, useTerminalStatus } from './terminal-auth/TerminalStatus'
+import { useTerminalStatus } from './terminal-auth/TerminalStatus'
 import { CashierTerminalRoute } from './terminal-auth/CashierTerminalRoute'
 import { CashierPosLayout } from './terminal-auth/CashierPosLayout'
 import { CashierDashboardScreen, OwnerDashboardScreen, ReportsScreen } from './screens/ReportingScreens'
 import { resolveFinancialAccess } from './lib/management-access'
+import { ConnectionAndSync } from './components/ConnectionAndSync'
 
 const CashierLogin = lazy(() => import('./terminal-auth/CashierLogin').then(module => ({ default: module.CashierLogin })))
 const ManagerSetup = lazy(() => import('./terminal-auth/ManagerSetup').then(module => ({ default: module.ManagerSetup })))
@@ -45,11 +46,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const mobileNav = [nav[0], nav[1], nav[2], nav[3], nav[6]]
   const go = useNavigate()
   const [signingOut, setSigningOut] = useState(false)
-  const [canReport, setCanReport] = useState(false)
+  const [canReport, setCanReport] = useState<boolean>()
   const terminal = useTerminalStatus()
   useEffect(() => {
     let active = true
-    setCanReport(false)
     void resolveFinancialAccess().then(() => { if (active) setCanReport(true) }).catch(() => { if (active) setCanReport(false) })
     return () => { active = false }
   }, [])
@@ -61,7 +61,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
       go('/login', { replace: true })
     } finally { setSigningOut(false) }
   }
-  return <div className="pos-app"><aside className="app-sidebar"><Brand dark /><nav aria-label="Store navigation">{visibleNav.map(([icon, label, to]) => <NavLink key={label} to={to}><span aria-hidden="true">{icon}</span>{label}</NavLink>)}</nav><div className="sidebar-bottom"><span>{terminal?.device.name ?? 'Store workspace'}<br /><small>{terminal ? 'Terminal ready' : 'No terminal connected'}</small></span></div></aside><main className="app-main"><header className="app-top"><div className="mobile-store"><Brand dark /></div><div className="connection" role="status"><TerminalState terminal={terminal} /></div><button className="sync" type="button" aria-label="Sync is not set up yet" disabled>↻</button><span className="register-meta"><b>{terminal?.device.name ?? 'Store workspace'}</b><small>{terminal ? `Receipt prefix: ${terminal.device.receipt_prefix}` : 'No terminal connected'}</small></span><button className="sign-out" type="button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button></header>{children}</main><nav className="mobile-nav" aria-label="Store navigation">{mobileNav.map(([icon, label, to]) => <NavLink key={label} to={to}><span aria-hidden="true">{icon}</span>{label}</NavLink>)}</nav></div>
+  if (canReport === undefined) return <AuthPending />
+  return <div className="pos-app"><aside className="app-sidebar"><Brand dark /><nav aria-label="Store navigation">{visibleNav.map(([icon, label, to]) => <NavLink key={label} to={to}><span aria-hidden="true">{icon}</span>{label}</NavLink>)}</nav><div className="sidebar-bottom"><span>{terminal?.device.name ?? 'Store workspace'}<br /><small>{terminal ? 'Terminal ready' : 'No terminal connected'}</small></span></div></aside><main className="app-main"><header className="app-top"><div className="mobile-store"><Brand dark /></div><ConnectionAndSync /><span className="register-meta"><b>{terminal?.device.name ?? 'Store workspace'}</b><small>{terminal ? `Receipt prefix: ${terminal.device.receipt_prefix}` : 'No terminal connected'}</small></span><button className="sign-out" type="button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button></header>{children}</main><nav className="mobile-nav" aria-label="Store navigation">{mobileNav.map(([icon, label, to]) => <NavLink key={label} to={to}><span aria-hidden="true">{icon}</span>{label}</NavLink>)}</nav></div>
 }
 function Register() { return <AppLayout><RegisterScreen /></AppLayout> }
 function Cart() { return <aside className="sale-cart"><div className="cart-title"><h2>Current Sale</h2><button type="button" className="text-action" disabled>Clear cart</button></div><p className="empty-cart">Your cart is ready for products.</p><button type="button" className="customer" disabled>Add customer <small>(available with POS setup)</small></button><div className="totals"><span>Subtotal <b>$0.00</b></span><span>Tax <b>$0.00</b></span><strong>Total <b>$0.00</b></strong></div><Button to="/payment">Proceed to payment</Button></aside> }
