@@ -64,6 +64,7 @@ export interface LocalOrder {
   store_id: string
   receipt_number: string
   subtotal_cents: number      // integer cents
+  discount_cents?: number     // integer cents; absent on older records means zero
   tax_cents: number           // integer cents
   total_cents: number         // integer cents
   catalog_version: number

@@ -26,7 +26,8 @@
 .cashier-profile small { color: #667085; font-weight: 500; }
 .cashier-pos-status { display: flex; gap: 20px; align-items: center; min-height: 33px; padding: 0 8px; margin: 0 6px; border-top: 1px solid #e6e0d7; color: #667085; font-size: 10px; }
 .cashier-pos-status span:first-child { color: #1d8b4c; }
-@media (max-width: 800px) { .cashier-pos-shell { display: block; } .cashier-pos-sidebar { display: none; } .cashier-pos-main { padding: 0 9px; } .cashier-pos-topbar { gap: 9px; overflow: hidden; white-space: nowrap; } .cashier-pos-topbar > span:nth-child(3) { display: none; } .cashier-pos-status { overflow: auto; white-space: nowrap; } }
+.cashier-mobile-nav { display: none; }
+@media (max-width: 800px) { .cashier-pos-shell { display: block; padding-bottom: 62px; } .cashier-pos-sidebar { display: none; } .cashier-pos-main { padding: 0 9px; } .cashier-pos-topbar { gap: 9px; overflow: hidden; white-space: nowrap; } .cashier-pos-topbar > span:nth-child(3) { display: none; } .cashier-pos-status { overflow: auto; white-space: nowrap; } .cashier-mobile-nav { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; height: 62px; display: grid; grid-template-columns: repeat(2,1fr); background: #152c21; box-shadow: 0 -4px 18px #18231c33; } .cashier-mobile-nav a { display: grid; place-items: center; align-content: center; gap: 2px; color: #c9d1c5; text-decoration: none; font-size: 10px; } .cashier-mobile-nav a span { font-size: 17px; } .cashier-mobile-nav a.active { color: #fff; background: #385641; } }
 
 .team-members { margin-top: 16px; overflow: hidden; border: 1px solid #e5dfd6; border-radius: 14px; background: #fffdf9; }
 .team-members h3 { margin: 0; padding: 15px 18px; border-bottom: 1px solid #ebe7df; font-size: 16px; }
