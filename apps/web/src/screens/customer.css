@@ -7,6 +7,7 @@
 .crm-panel label { display: block; margin: 18px 0 12px; font-weight: 600; }
 .crm-panel input { display: block; width: 100%; box-sizing: border-box; margin-top: 7px; padding: 12px; border: 1px solid #c9c5b9; background: #fff; color: #203d31; }
 .crm-panel input:focus-visible, .crm-panel button:focus-visible, .crm-dialog button:focus-visible { outline: 3px solid #cfa848; outline-offset: 2px; }
+.customer-name-count { margin: -6px 0 12px; color: #5c675f; font-size: 0.875rem; }
 .crm-results ul { list-style: none; padding: 0; margin: 14px 0; }
 .crm-results li { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #e5dfd1; }
 .crm-results li span { min-width: 0; overflow-wrap: anywhere; }

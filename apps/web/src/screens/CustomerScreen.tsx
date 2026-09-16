@@ -19,6 +19,8 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const normalizedName = name.trim().replace(/\s+/g, ' ')
+  const nameError = normalizedName.length > 30 ? 'Customer name must be 30 characters or fewer.' : ''
   useEffect(() => {
     let active = true
     setServer([]); setNextCursor(null); setError('')
@@ -63,9 +65,10 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
     </section>
     <section className="crm-panel" aria-labelledby="crm-create-title"><h2 id="crm-create-title">Create customer</h2>
       <p>A name is required. Phone is optional; when supplied, include an explicit country code.</p>
-      <form onSubmit={event => void create(event)}><label>Customer name<input value={name} onChange={event => setName(event.target.value)} required maxLength={160} autoComplete="name" /></label>
+      <form onSubmit={event => void create(event)}><label>Customer name<input value={name} onChange={event => setName(event.target.value)} required aria-invalid={Boolean(nameError)} aria-describedby="customer-name-limit" autoComplete="name" /></label>
+        <p id="customer-name-limit" className={nameError ? 'form-notice error' : 'customer-name-count'} role={nameError ? 'alert' : undefined}>{nameError || `${normalizedName.length} / 30 characters`}</p>
         <label>Phone with country code (optional)<input type="tel" inputMode="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+923001234567" autoComplete="tel" /></label>
-        <button type="submit" className="cta" disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save customer'}</button></form>
+        <button type="submit" className="cta" disabled={busy || !normalizedName || Boolean(nameError)}>{busy ? 'Saving…' : 'Save customer'}</button></form>
       {message && <p className="form-notice" role="status">{message}</p>}
       {error && <p className="form-notice error" role="alert">{error}</p>}
     </section>

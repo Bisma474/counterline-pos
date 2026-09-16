@@ -2,7 +2,7 @@
 create table public.pos_customers (
   id uuid primary key,
   store_id uuid not null references public.stores(id),
-  name text not null check (length(trim(name)) between 1 and 160),
+  name text not null check (length(trim(name)) between 1 and 30),
   phone_normalized text check (phone_normalized ~ '^[1-9][0-9]{3,14}$'),
   client_generated_at timestamptz not null,
   server_received_at timestamptz not null default now(),

@@ -313,7 +313,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         store_id: { type: string, format: uuid }
-        name: { type: string, minLength: 1, maxLength: 160 }
+        name: { type: string, minLength: 1, maxLength: 30 }
         phone_normalized: { type: string, nullable: true, pattern: '^[1-9][0-9]{3,14}$' }
     CustomerSearch:
       type: object
@@ -334,7 +334,7 @@ components:
           properties:
             id: { type: string, format: uuid, description: Stable client-generated customer UUID. }
             store_id: { type: string, format: uuid, description: Must equal authenticated store; never grants authorization. }
-            name: { type: string, minLength: 1, maxLength: 160 }
+            name: { type: string, minLength: 1, maxLength: 30 }
             phone_normalized: { type: string, nullable: true, pattern: '^[1-9][0-9]{3,14}$' }
             client_generated_at: { type: string, format: date-time }
     CustomerPushResult:
