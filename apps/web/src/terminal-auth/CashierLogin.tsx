@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
 import { currentAccess, lockTerminal, loginCashier, readTerminal, refreshTerminal, type TerminalCache } from './cache'
 import './terminal-auth.css'
@@ -15,6 +15,7 @@ export function CashierLogin() {
   const [online, setOnline] = useState(navigator.onLine)
   const [offlineReady, setOfflineReady] = useState(false)
   const [managerApproval, setManagerApproval] = useState(false)
+  const navigate = useNavigate()
 
   async function load() {
     const state = await currentAccess()
@@ -43,6 +44,12 @@ export function CashierLogin() {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to unlock terminal.'); setPin('') }
     finally { setBusy(false) }
   }
+
+  useEffect(() => {
+    if (cache?.employees?.length && cache.session) {
+      navigate('/pos/register')
+    }
+  }, [cache, navigate])
 
   async function refresh() {
     setBusy(true); setError('')

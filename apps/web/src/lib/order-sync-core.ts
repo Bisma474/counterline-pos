@@ -23,11 +23,19 @@ async function claimOne(storeId: string): Promise<OutboxEntry | undefined> {
       if (!(row.status === 'pending' || row.failure_kind === 'connectivity' || row.failure_kind === 'dependency') ||
           row.next_attempt_at > now || (row.lease_expires_at && row.lease_expires_at >= now)) continue
       const parent = (row.depends_on ?? []).map(id => byOperation.get(id))
-      if (parent.some(dependency => !dependency || dependency.status !== 'synced')) {
+      // Only wait if there is a dependency that is still pending or retrying.
+      // If a dependency failed server validation permanently, do not block the sale:
+      // the server will accept the order without the customer link so the sale is not lost.
+      const pendingParent = parent.filter(dependency => !dependency || (dependency.status !== 'synced' && dependency.failure_kind !== 'validation'))
+      if (pendingParent.length > 0) {
         if (row.id && row.entity_type !== 'customer') {
-          const reason = parent.some(dependency => dependency?.failure_kind === 'validation')
-            ? 'Customer creation was rejected. Keep this paid sale for review.' : 'Waiting for customer upload before this sale can sync.'
-          await posDb.outbox.update(row.id, { status: 'failed', failure_kind: 'dependency', reason_code: 'dependency_pending', failure_reason: reason })
+          const reason = 'Waiting for customer to sync before this sale can proceed.'
+          await posDb.outbox.update(row.id, {
+            failure_kind: 'dependency',
+            reason_code: 'dependency_pending',
+            failure_reason: reason,
+            next_attempt_at: nextAttempt(row.attempt_count),
+          })
           await posDb.orders.update(row.order_id, { sync_status: 'pending', failure_reason: reason })
         }
         continue
@@ -94,13 +102,36 @@ export async function pushOrdersForStore(storeId: string, send: SendOperation): 
 }
 
 export async function retryOrderForStore(operationId: string, storeId: string, send: SendOperation) {
-  const entry = await posDb.outbox.where('operation_id').equals(operationId).first()
-  if (!entry || entry.store_id !== storeId || entry.status === 'synced' || entry.failure_kind === 'validation') return
+  const entry = (await posDb.outbox.where('operation_id').equals(operationId).first())
+    ?? (await posDb.outbox.where('order_id').equals(operationId).first())
+  // Allow retry for connectivity, authentication, and dependency failures.
+  // Do NOT allow retry for genuine server-side validation failures (the server will reject again).
+  if (!entry || entry.store_id !== storeId || entry.status === 'synced') return
+  if (entry.failure_kind === 'validation') return
   await posDb.outbox.update(entry.id!, { status: 'pending', failure_kind: null, reason_code: null,
     failure_reason: null, next_attempt_at: new Date().toISOString(), lease_owner: null, lease_expires_at: null })
   if (entry.entity_type === 'customer') {
     const payload = JSON.parse(entry.payload) as { customer: { id: string } }
     await posDb.customers.update(payload.customer.id, { sync_status: 'pending', failure_reason: null })
-  } else await posDb.orders.update(entry.order_id, { sync_status: 'pending', failure_reason: null })
+  } else {
+    await posDb.orders.update(entry.order_id, { sync_status: 'pending', failure_reason: null })
+    if (entry.depends_on?.length) {
+      for (const parentOpId of entry.depends_on) {
+        const parentEntry = await posDb.outbox.where('operation_id').equals(parentOpId).first()
+        if (parentEntry && parentEntry.status !== 'synced') {
+          await posDb.outbox.update(parentEntry.id!, {
+            status: 'pending', failure_kind: null, reason_code: null, failure_reason: null,
+            next_attempt_at: new Date().toISOString(), lease_owner: null, lease_expires_at: null,
+          })
+          if (parentEntry.entity_type === 'customer') {
+            try {
+              const payload = JSON.parse(parentEntry.payload) as { customer: { id: string } }
+              await posDb.customers.update(payload.customer.id, { sync_status: 'pending', failure_reason: null })
+            } catch { /* ignore parse error */ }
+          }
+        }
+      }
+    }
+  }
   await pushOrdersForStore(storeId, send)
 }
