@@ -11,7 +11,7 @@ import type { CartItem } from '../src/lib/pos-store'
 const storeId = '90ca1d78-8027-4db8-8247-f4d8794b2680'
 const productId = 'ff439cac-818c-43cc-924e-62f5cc049322'
 const cart: CartItem[] = [{ storeId, productId, name: 'Test item', sku: 'TEST-001',
-  unitPriceCents: 199, taxRateBps: 500, catalogVersion: 1, quantity: 2 }]
+  unitPriceCents: 199, taxRateBps: 500, catalogVersion: 1, quantity: 2, discount: null }]
 Object.defineProperty(navigator, 'onLine', { value: true, configurable: true })
 
 test('cash checkout commits the receipt, sale, payment, stock overlay and outbox together', async () => {
@@ -143,19 +143,53 @@ test('offline customer creation and attached sale survive reload; dependency upl
   await posDb.delete()
 })
 
-test('failed customer upload leaves attached paid order queued and shows the dependency', async () => {
+test('a permanently rejected customer upload does not block the dependent paid order from syncing', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
   const customer = await createLocalCustomer(storeId, 'Bea South', '+923001234567')
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, customer.id)
   const sent: string[] = []
-  await pushOrdersForStore(storeId, async entry => { sent.push(entry.entity_type ?? 'order'); return { ok: false, status: 422, body: { code: 'validation_failed', message: 'Customer needs review.' } } })
-  assert.deepEqual(sent, ['customer'])
+  // Mirrors the real server (orders.ts): a permanently rejected customer does not block the sale —
+  // the order still accepts, just without the customer link, so the sale is never lost.
+  await pushOrdersForStore(storeId, async entry => {
+    sent.push(entry.entity_type ?? 'order')
+    if (entry.entity_type === 'customer') return { ok: false, status: 422, body: { code: 'validation_failed', message: 'Customer needs review.' } }
+    return { ok: true, status: 200, body: { status: 'accepted', operation_id: entry.operation_id, accepted_checkpoint: '1' } }
+  })
+  assert.deepEqual(sent, ['customer', 'order'])
   assert.equal((await posDb.orders.get(sale.operationId))?.customer_id, customer.id)
-  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'pending')
-  assert.match((await posDb.orders.get(sale.operationId))?.failure_reason ?? '', /Waiting|rejected/)
-  assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.failure_kind, 'dependency')
-  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, null)
+  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'synced')
+  assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.status, 'synced')
+  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, '1')
+  await posDb.delete()
+})
+
+test('a cashier-level discount (20% or less) completes without manager approval and is snapshotted on the order item', async () => {
+  await posDb.delete(); await posDb.open()
+  await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 1_000 } }]
+  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null)
+  const order = await posDb.orders.get(sale.operationId)
+  assert.equal(order?.discount_cents, 40)
+  assert.equal(order?.manager_id, null)
+  const item = (await posDb.order_items.where('order_id').equals(sale.operationId).toArray())[0]
+  assert.equal(item.discount_kind, 'percent')
+  assert.equal(item.discount_value, 1_000)
+  assert.equal(item.discount_applied_cents, 40)
+  assert.equal(item.taxable_cents, 358)
+  await posDb.delete()
+})
+
+test('a discount above 20% is refused without manager evidence and accepted with it', async () => {
+  await posDb.delete(); await posDb.open()
+  await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 2_500 } }]
+  await assert.rejects(completeLocalSale(discounted, storeId, 'cash', 500, null), /manager approval/)
+  assert.equal(await posDb.orders.count(), 0)
+  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null, null, { managerId: 'manager-1', approvedAt: '2026-09-17T10:00:00.000Z' })
+  const order = await posDb.orders.get(sale.operationId)
+  assert.equal(order?.manager_id, 'manager-1')
+  assert.equal(order?.manager_approved_at, '2026-09-17T10:00:00.000Z')
   await posDb.delete()
 })
 

@@ -45,3 +45,11 @@
 .team-active::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #35bd74; }
 .team-empty { padding: 18px; margin: 0; color: #667085; font-size: 13px; }
 @media (max-width: 620px) { .team-members ul { padding: 0 14px; } .team-members li { grid-template-columns: 36px minmax(0,1fr) auto; gap: 9px; } .team-active { display: none; } }
+
+/* Manager Approval Modal: overlay reuses the cashier PIN keypad card for visual consistency. */
+.manager-approval-overlay { position: fixed; inset: 0; z-index: 50; background: #142a22cc; display: grid; place-items: center; padding: 12px; }
+.manager-approval-dialog { width: min(100%, 440px); max-height: min(94vh, 720px); overflow: auto; box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+.manager-approval-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 6px; }
+.manager-approval-head h1 { margin: 2px 0 0; font-size: 26px; letter-spacing: -.03em; }
+.manager-approval-reason { color: #667085; font-size: 13px; line-height: 1.5; margin: 6px 0 18px; }
+@media (max-width: 480px) { .manager-approval-dialog { padding: 22px 18px; } .manager-approval-head h1 { font-size: 23px; } }
