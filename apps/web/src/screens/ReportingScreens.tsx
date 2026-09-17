@@ -338,15 +338,16 @@ export function CashierDashboardScreen() {
       const today = todayInTimezone(timezone)
 
       subscription = liveQuery(async () => {
-        const [orders, items, payments, outbox] = await Promise.all([
+        const [allStoreOrders, items, payments, outbox] = await Promise.all([
           posDb.orders.where('store_id').equals(cache.device.store_id).toArray(),
           posDb.order_items.toArray(),
           posDb.payments.toArray(),
           posDb.outbox.where('store_id').equals(cache.device.store_id).toArray(),
         ])
 
-        const shift = calculateCashierShift(orders, payments, cache.device.store_id, today, timezone)
-        const recentOrders = getRecentOrders(orders, items, payments, cache.device.store_id, 5)
+        const terminalOrders = allStoreOrders.filter(o => o.receipt_number.startsWith(cache.device.receipt_prefix))
+        const shift = calculateCashierShift(terminalOrders, payments, cache.device.store_id, today, timezone)
+        const recentOrders = getRecentOrders(terminalOrders, items, payments, cache.device.store_id, 5)
 
         return {
           cashier: employee.name,
