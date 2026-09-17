@@ -28,7 +28,181 @@ async function snapshot(req: import('express').Request, res: import('express').R
     finally { client.release() }
   } catch (reason) { sendApiError(res, reason) }
 }
+
+// ---------------------------------------------------------------------------
+// POST /catalog/products — owner/manager creates a new product
+// ---------------------------------------------------------------------------
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+async function createProduct(req: import('express').Request, res: import('express').Response) {
+  try {
+    const body = req.body as Record<string, unknown>
+    const storeId = String(body.store_id ?? '')
+    if (!UUID_RE.test(storeId)) throw new ApiError(400, 'validation_failed', 'A valid store_id UUID is required.')
+
+    await requireStoreMember(req, storeId)
+
+    // Validate name
+    const name = String(body.name ?? '').trim()
+    if (!name || name.length > 160) throw new ApiError(422, 'validation_failed', 'Product name is required and must be 1–160 characters.')
+
+    // Validate SKU
+    const sku = String(body.sku ?? '').trim()
+    if (!sku || sku.length > 80) throw new ApiError(422, 'validation_failed', 'SKU is required and must be 1–80 characters.')
+
+    // Validate barcode (optional, alphanumeric)
+    const rawBarcode = body.barcode !== undefined && body.barcode !== null && String(body.barcode).trim() !== ''
+      ? String(body.barcode).trim() : null
+    if (rawBarcode !== null && (!/^[A-Za-z0-9]+$/.test(rawBarcode) || rawBarcode.length > 80)) {
+      throw new ApiError(422, 'validation_failed', 'Barcode must be alphanumeric, 1–80 characters.')
+    }
+
+    // Validate optional FK references
+    const categoryId = body.category_id && UUID_RE.test(String(body.category_id))
+      ? String(body.category_id) : null
+    const taxRateId = body.tax_rate_id && UUID_RE.test(String(body.tax_rate_id))
+      ? String(body.tax_rate_id) : null
+
+    // Optional: create new category by name within the same transaction
+    const newCategoryName = body.new_category_name && typeof body.new_category_name === 'string'
+      ? body.new_category_name.trim() : null
+    if (newCategoryName && newCategoryName.length > 120) {
+      throw new ApiError(422, 'validation_failed', 'Category name must be 1–120 characters.')
+    }
+    // categoryId and newCategoryName are mutually exclusive: new_category_name takes precedence
+    const useExistingCategoryId = newCategoryName ? null : categoryId
+
+    // Validate price (integer cents)
+    const rawPrice = body.unit_price_cents
+    if (!Number.isInteger(rawPrice) || (rawPrice as number) < 0 || (rawPrice as number) > 1_000_000_000) {
+      throw new ApiError(422, 'validation_failed', 'unit_price_cents must be a non-negative integer ≤ 1,000,000,000.')
+    }
+    const priceCents = rawPrice as number
+
+    // Validate initial stock
+    const rawStock = body.initial_stock !== undefined ? body.initial_stock : 0
+    if (!Number.isInteger(rawStock) || (rawStock as number) < 0 || (rawStock as number) > 1_000_000) {
+      throw new ApiError(422, 'validation_failed', 'initial_stock must be a non-negative integer.')
+    }
+    const initialStock = rawStock as number
+
+    // Single pg transaction: product + stock + feed (doc 03 §3.5 serialized per-store feed)
+    const client = await db.connect()
+    try {
+      await client.query('begin')
+
+      // Lock feed state row first (serialises concurrent store writes)
+      const feedRow = await client.query(
+        'select last_position from public.pos_sync_feed_state where store_id=$1 for update',
+        [storeId],
+      )
+      if (!feedRow.rows[0]) throw new ApiError(503, 'server_unavailable', 'Store is not initialized. Apply catalog migration.')
+
+      const nextPos = (BigInt(feedRow.rows[0].last_position as string | number) + 1n).toString()
+
+      // Create new category if requested (inside transaction)
+      let resolvedCategoryId: string | null = useExistingCategoryId
+      let createdCategory: { id: string; store_id: string; name: string; active: boolean } | null = null
+      if (newCategoryName) {
+        const catRes = await client.query(
+          `insert into public.pos_categories (store_id, name, active)
+           values ($1,$2,true)
+           on conflict (store_id, name) do update set active = true
+           returning id, store_id, name, active`,
+          [storeId, newCategoryName],
+        )
+        resolvedCategoryId = catRes.rows[0].id as string
+        createdCategory = catRes.rows[0] as { id: string; store_id: string; name: string; active: boolean }
+      } else if (useExistingCategoryId) {
+        // Verify existing category belongs to this store
+        const chk = await client.query(
+          'select 1 from public.pos_categories where store_id=$1 and id=$2',
+          [storeId, useExistingCategoryId],
+        )
+        if (!chk.rowCount) throw new ApiError(422, 'validation_failed', 'Category does not belong to this store.')
+      }
+
+      // Verify tax rate belongs to store
+      if (taxRateId) {
+        const chk = await client.query(
+          'select 1 from public.pos_tax_rates where store_id=$1 and id=$2',
+          [storeId, taxRateId],
+        )
+        if (!chk.rowCount) throw new ApiError(422, 'validation_failed', 'Tax rate does not belong to this store.')
+      }
+
+      // Insert product
+      const productRes = await client.query(
+        `insert into public.pos_products
+          (store_id, sku, barcode, name, category_id, tax_rate_id, unit_price_cents, active, revision)
+         values ($1,$2,$3,$4,$5,$6,$7,true,1)
+         returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
+                   unit_price_cents::text as unit_price_cents, active, revision::text as revision`,
+        [storeId, sku, rawBarcode, name, resolvedCategoryId, taxRateId, priceCents],
+      )
+      const row = productRes.rows[0] as {
+        id: string; store_id: string; sku: string; barcode: string | null
+        name: string; category_id: string | null; tax_rate_id: string | null
+        unit_price_cents: string; active: boolean; revision: string
+      }
+
+      // Insert stock
+      await client.query(
+        'insert into public.pos_stock (store_id, product_id, current_stock, updated_at) values ($1,$2,$3,now())',
+        [storeId, row.id, initialStock],
+      )
+
+      // Insert opening_stock movement (only when stock > 0)
+      if (initialStock > 0) {
+        await client.query(
+          `insert into public.pos_inventory_movements (store_id, product_id, operation_id, delta, reason)
+           values ($1,$2,gen_random_uuid(),$3,'opening_stock')`,
+          [storeId, row.id, initialStock],
+        )
+      }
+
+      // Advance feed position
+      await client.query(
+        'update public.pos_sync_feed_state set last_position=$1 where store_id=$2',
+        [nextPos, storeId],
+      )
+
+      // Write change_feed entry so terminals get it on next pull
+      const feedPayload = JSON.stringify({
+        product: { id: row.id, store_id: row.store_id, sku: row.sku, barcode: row.barcode,
+          name: row.name, category_id: row.category_id, tax_rate_id: row.tax_rate_id,
+          unit_price_cents: priceCents, active: true, revision: 1 },
+        stock: { product_id: row.id, current_stock: initialStock },
+      })
+      await client.query(
+        `insert into public.pos_change_feed (store_id, position, entity_type, entity_id, action, payload)
+         values ($1,$2,'product',$3,'upsert',$4::jsonb)`,
+        [storeId, nextPos, row.id, feedPayload],
+      )
+
+      await client.query('commit')
+
+      res.status(201).json({
+        product: { id: row.id, store_id: row.store_id, sku: row.sku, barcode: row.barcode,
+          name: row.name, category_id: row.category_id, tax_rate_id: row.tax_rate_id,
+          unit_price_cents: priceCents, active: row.active, revision: 1 },
+        stock: { product_id: row.id, current_stock: initialStock },
+        ...(createdCategory ? { category: createdCategory } : {}),
+        checkpoint: nextPos,
+      })
+    } catch (reason) {
+      await client.query('rollback')
+      throw reason
+    } finally {
+      client.release()
+    }
+  } catch (reason) {
+    sendApiError(res, reason)
+  }
+}
+
 export const catalogRouter = Router()
 export const terminalCatalogRouter = Router()
 catalogRouter.get('/snapshot', (req, res) => void snapshot(req, res))
+catalogRouter.post('/products', (req, res) => void createProduct(req, res))
 terminalCatalogRouter.get('/snapshot', (req, res) => void snapshot(req, res, true))
