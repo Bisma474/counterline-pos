@@ -1,7 +1,13 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import { db } from '../db.js'
 import { requireStoreMember, sendApiError, ApiError } from './auth.js'
 import { requireCashierTerminal } from '../terminal-auth/routes.js'
+
+async function requireCatalogManager(req: Request, storeId: string): Promise<void> {
+  const userId = await requireStoreMember(req, storeId)
+  const result = await db.query<{ role: string }>('select role from public.store_memberships where store_id=$1 and user_id=$2 and active=true', [storeId, userId])
+  if (!['owner', 'manager'].includes(result.rows[0]?.role ?? '')) throw new ApiError(403, 'authorization_failed', 'Product catalog management requires an owner or manager role.')
+}
 
 async function snapshot(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
@@ -40,7 +46,7 @@ async function createProduct(req: import('express').Request, res: import('expres
     const storeId = String(body.store_id ?? '')
     if (!UUID_RE.test(storeId)) throw new ApiError(400, 'validation_failed', 'A valid store_id UUID is required.')
 
-    await requireStoreMember(req, storeId)
+    await requireCatalogManager(req, storeId)
 
     // Validate name
     const name = String(body.name ?? '').trim()
