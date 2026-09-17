@@ -143,19 +143,24 @@ test('offline customer creation and attached sale survive reload; dependency upl
   await posDb.delete()
 })
 
-test('failed customer upload leaves attached paid order queued and shows the dependency', async () => {
+test('a permanently rejected customer upload does not block the dependent paid order from syncing', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
   const customer = await createLocalCustomer(storeId, 'Bea South', '+923001234567')
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, customer.id)
   const sent: string[] = []
-  await pushOrdersForStore(storeId, async entry => { sent.push(entry.entity_type ?? 'order'); return { ok: false, status: 422, body: { code: 'validation_failed', message: 'Customer needs review.' } } })
-  assert.deepEqual(sent, ['customer'])
+  // Mirrors the real server (orders.ts): a permanently rejected customer does not block the sale —
+  // the order still accepts, just without the customer link, so the sale is never lost.
+  await pushOrdersForStore(storeId, async entry => {
+    sent.push(entry.entity_type ?? 'order')
+    if (entry.entity_type === 'customer') return { ok: false, status: 422, body: { code: 'validation_failed', message: 'Customer needs review.' } }
+    return { ok: true, status: 200, body: { status: 'accepted', operation_id: entry.operation_id, accepted_checkpoint: '1' } }
+  })
+  assert.deepEqual(sent, ['customer', 'order'])
   assert.equal((await posDb.orders.get(sale.operationId))?.customer_id, customer.id)
-  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'pending')
-  assert.match((await posDb.orders.get(sale.operationId))?.failure_reason ?? '', /Waiting|rejected/)
-  assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.failure_kind, 'dependency')
-  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, null)
+  assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'synced')
+  assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.status, 'synced')
+  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, '1')
   await posDb.delete()
 })
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { Router } from 'express'
 import { db } from '../db.js'
 import { ApiError, requireStoreMember, sendApiError } from './auth.js'
-import { boundedInteger, calculateLine, MAX_CENTS, sumLines } from '../../../../packages/domain/src/money.js'
+import { boundedInteger, calculateDiscountedLine, discountNeedsManagerApproval, MAX_CENTS, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money.js'
 import { requireDeviceTerminal } from '../terminal-auth/routes.js'
 
 export const ordersRouter = Router()
@@ -26,6 +26,24 @@ function cents(value: unknown, name: string, max = MAX_CENTS): number {
   try { return boundedInteger(value as number, name, 0, max) }
   catch { throw new ApiError(422, 'validation_failed', `${name} must be valid integer cents.`) }
 }
+function timestamp(value: unknown, name: string): string {
+  const result = text(value, name, 40)
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(result) || Number.isNaN(Date.parse(result)) || new Date(result).toISOString() !== result) {
+    throw new ApiError(422, 'validation_failed', `${name} must be a valid UTC timestamp.`)
+  }
+  return result
+}
+// A line may send discount_kind/discount_value together, or omit both for no discount.
+function parseDiscount(item: JsonRecord, label: string): LineDiscount {
+  const kind = item.discount_kind
+  if (kind === null || kind === undefined) {
+    if (item.discount_value !== null && item.discount_value !== undefined) throw new ApiError(422, 'validation_failed', `${label} discount value must be empty when no discount is applied.`)
+    return null
+  }
+  if (kind !== 'percent' && kind !== 'fixed') throw new ApiError(422, 'validation_failed', `${label} discount kind is invalid.`)
+  if (!Number.isSafeInteger(item.discount_value) || (item.discount_value as number) < 0) throw new ApiError(422, 'validation_failed', `${label} discount value is invalid.`)
+  return kind === 'percent' ? { kind: 'percent', bps: item.discount_value as number } : { kind: 'fixed', cents: item.discount_value as number }
+}
 
 export function validateOperation(raw: unknown) {
   const body = record(raw, 'Operation')
@@ -43,27 +61,39 @@ export function validateOperation(raw: unknown) {
       throw new ApiError(422, 'validation_failed', `Item ${index + 1} catalog version is invalid.`)
     }
     const price = cents(item.snapshot_price_cents, 'Unit price')
-    let line: ReturnType<typeof calculateLine>
-    try { line = calculateLine(price, item.quantity as number, item.snapshot_tax_bps as number) }
-    catch { throw new ApiError(422, 'validation_failed', `Item ${index + 1} has invalid quantity, tax or amount.`) }
-    if (line.subtotalCents !== item.subtotal_cents || line.taxCents !== item.tax_cents || line.totalCents !== item.total_cents) {
+    const discount = parseDiscount(item, `Item ${index + 1}`)
+    let line: ReturnType<typeof calculateDiscountedLine>
+    try { line = calculateDiscountedLine(price, item.quantity as number, item.snapshot_tax_bps as number, discount) }
+    catch { throw new ApiError(422, 'validation_failed', `Item ${index + 1} has invalid quantity, tax, discount or amount.`) }
+    if (line.subtotalCents !== item.subtotal_cents || line.discountAppliedCents !== item.discount_applied_cents ||
+        line.taxableCents !== item.taxable_cents || line.taxCents !== item.tax_cents || line.totalCents !== item.total_cents) {
       throw new ApiError(422, 'total_mismatch', `Item ${index + 1} totals do not match.`)
     }
     return { id: id(item.id, 'Item ID'), product_id: id(item.product_id, 'Product ID'),
       snapshot_name: text(item.snapshot_name, 'Item name'), snapshot_sku: text(item.snapshot_sku, 'Item SKU', 80),
       snapshot_price_cents: price, snapshot_tax_bps: item.snapshot_tax_bps as number,
-      catalog_version: item.catalog_version as number,
-      quantity: item.quantity as number, ...{ subtotal_cents: line.subtotalCents, tax_cents: line.taxCents, total_cents: line.totalCents } }
+      catalog_version: item.catalog_version as number, quantity: item.quantity as number,
+      discount_kind: discount?.kind ?? null, discount_value: discount ? (discount.kind === 'percent' ? discount.bps : discount.cents) : null,
+      subtotal_cents: line.subtotalCents, discount_applied_cents: line.discountAppliedCents,
+      taxable_cents: line.taxableCents, tax_cents: line.taxCents, total_cents: line.totalCents }
   })
   if (new Set(parsedItems.map(item => item.id)).size !== parsedItems.length) {
     throw new ApiError(422, 'validation_failed', 'Item IDs must be unique within a sale.')
   }
-  let totals: ReturnType<typeof sumLines>
-  try { totals = sumLines(parsedItems.map(item => ({ subtotalCents: item.subtotal_cents, taxCents: item.tax_cents, totalCents: item.total_cents }))) }
-  catch { throw new ApiError(422, 'total_mismatch', 'Order exceeds the supported money range.') }
-  if (totals.subtotalCents !== order.subtotal_cents || totals.taxCents !== order.tax_cents || totals.totalCents !== order.total_cents) {
+  let totals: ReturnType<typeof sumDiscountedLines>
+  try {
+    totals = sumDiscountedLines(parsedItems.map(item => ({ subtotalCents: item.subtotal_cents, discountAppliedCents: item.discount_applied_cents,
+      taxableCents: item.taxable_cents, taxCents: item.tax_cents, totalCents: item.total_cents })))
+  } catch { throw new ApiError(422, 'total_mismatch', 'Order exceeds the supported money range.') }
+  if (totals.subtotalCents !== order.subtotal_cents || totals.discountCents !== order.discount_cents ||
+      totals.taxCents !== order.tax_cents || totals.totalCents !== order.total_cents) {
     throw new ApiError(422, 'total_mismatch', 'Order totals do not match line totals.')
   }
+  const managerId = order.manager_id === null || order.manager_id === undefined ? null : id(order.manager_id, 'Manager ID')
+  const managerApprovedAt = order.manager_approved_at === null || order.manager_approved_at === undefined ? null : timestamp(order.manager_approved_at, 'Manager approval time')
+  if ((managerId === null) !== (managerApprovedAt === null)) throw new ApiError(422, 'validation_failed', 'Manager approval evidence is incomplete.')
+  const needsApproval = parsedItems.some(item => discountNeedsManagerApproval(item.subtotal_cents, item.discount_applied_cents))
+  if (needsApproval && managerId === null) throw new ApiError(422, 'validation_failed', 'A discount on this sale requires manager approval.')
   const method = payment.method
   if (method !== 'cash' && method !== 'card') throw new ApiError(422, 'validation_failed', 'Payment method is invalid.')
   const amount = cents(payment.amount_cents, 'Payment amount')
@@ -73,18 +103,14 @@ export function validateOperation(raw: unknown) {
       (method === 'card' && (tendered !== amount || change !== 0))) {
     throw new ApiError(422, 'total_mismatch', 'Payment does not balance with the order.')
   }
-  const generatedAt = text(order.client_generated_at, 'Sale time', 40)
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(generatedAt) ||
-      Number.isNaN(Date.parse(generatedAt)) || new Date(generatedAt).toISOString() !== generatedAt) {
-    throw new ApiError(422, 'validation_failed', 'Sale time must be a valid UTC timestamp.')
-  }
+  const generatedAt = timestamp(order.client_generated_at, 'Sale time')
   if (!Number.isSafeInteger(order.catalog_version) || (order.catalog_version as number) < 1 || (order.catalog_version as number) > MAX_CENTS) {
     throw new ApiError(422, 'validation_failed', 'Catalog version is invalid.')
   }
   return { operationId, storeId, items: parsedItems, totals,
     order: { customer_id: customerId, receipt_number: text(order.receipt_number, 'Receipt number', 100),
       catalog_version: order.catalog_version as number,
-      client_generated_at: generatedAt },
+      client_generated_at: generatedAt, manager_id: managerId, manager_approved_at: managerApprovedAt },
     payment: { id: id(payment.id, 'Payment ID'), method, amount_cents: amount,
       tendered_cents: tendered, change_cents: change,
       reference: payment.reference === null || payment.reference === undefined ? null : text(payment.reference, 'Card reference', 120) } }
@@ -124,17 +150,27 @@ async function push(req: import('express').Request, res: import('express').Respo
           operation.order.customer_id = null
         }
       }
+      if (operation.order.manager_id) {
+        const manager = await client.query(
+          "select 1 from public.terminal_employees where store_id=$1 and id=$2 and role='manager' and active=true",
+          [operation.storeId, operation.order.manager_id])
+        if (!manager.rowCount) throw new ApiError(422, 'validation_failed', 'Manager approval references an employee who is not an active manager for this store.')
+      }
       await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
-        subtotal_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id,manager_id,manager_approved_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [operation.operationId, operation.storeId, operation.order.receipt_number, store.rows[0].currency,
-          store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.taxCents,
-          operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id])
+          store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.discountCents, operation.totals.taxCents,
+          operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id,
+          operation.order.manager_id, operation.order.manager_approved_at])
       for (const item of operation.items) {
         await client.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
-          snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,subtotal_cents,tax_cents,total_cents)
-          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,discount_kind,discount_value,
+          subtotal_cents,discount_applied_cents,taxable_cents,tax_cents,total_cents)
+          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [item.id, operation.storeId, operation.operationId, item.product_id, item.snapshot_name, item.snapshot_sku,
-            item.snapshot_price_cents, item.snapshot_tax_bps, item.catalog_version, item.quantity, item.subtotal_cents, item.tax_cents, item.total_cents])
+            item.snapshot_price_cents, item.snapshot_tax_bps, item.catalog_version, item.quantity, item.discount_kind, item.discount_value,
+            item.subtotal_cents, item.discount_applied_cents, item.taxable_cents, item.tax_cents, item.total_cents])
       }
       await client.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,reference,client_generated_at)
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [operation.payment.id, operation.storeId, operation.operationId,
