@@ -13,6 +13,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   const storeId = usePosStore(state => state.storeId)
   const clearCart = usePosStore(state => state.clearCart)
   const selectedCustomer = usePosStore(state => state.selectedCustomer)
+  const managerApproval = usePosStore(state => state.managerApproval)
   const totals = usePosStore(state => state.totals)
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
   const [received, setReceived] = useState('')
@@ -36,7 +37,8 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
     inProgress.current = true
     setBusy(true); setError('')
     try {
-      const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null, selectedCustomer?.id ?? null)
+      const approval = managerApproval ? { managerId: managerApproval.managerId, approvedAt: managerApproval.approvedAt } : null
+      const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null, selectedCustomer?.id ?? null, approval)
       clearCart()
       void pushPendingOrders(storeId, terminal).catch(() => undefined)
       navigate(`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(result.operationId)}`, { replace: true, state: { committedOrderId: result.operationId } })

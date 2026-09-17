@@ -6,12 +6,14 @@
  * All monetary values are integer cents — never float.
  */
 import { create } from 'zustand'
-import { calculateLine, sumLines } from '../../../../packages/domain/src/money'
+import { calculateDiscountedLine, discountNeedsManagerApproval, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money'
 import type { LocalCustomer } from './db'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export type { LineDiscount }
 
 export interface CartItem {
   storeId: string
@@ -22,12 +24,47 @@ export interface CartItem {
   taxRateBps: number
   catalogVersion: number
   quantity: number
+  discount: LineDiscount
 }
 
 export interface CartTotals {
   subtotalCents: number
+  discountCents: number
   taxCents: number
   totalCents: number
+}
+
+// Evidence that a manager authorized the cart's current discounts. Bound to an exact cart
+// signature and permission version (docs/05_product_requirements.md, Manager modal — FEAT-AUTH-02):
+// any cart edit changes the signature and silently invalidates the approval.
+export interface ManagerApproval {
+  managerId: string
+  managerName: string
+  approvedAt: string
+  permissionVersion: number
+  cartSignature: string
+}
+
+// A stable fingerprint of every line that affects money math. Two carts with the same
+// signature produce the same totals and the same manager-approval requirement.
+export function cartSignature(items: CartItem[]): string {
+  return JSON.stringify(items.map(item => [item.productId, item.quantity, item.unitPriceCents, item.taxRateBps, item.discount]))
+}
+
+// Product IDs whose current discount exceeds the cashier's 20% independent authority and
+// therefore requires a current manager approval before checkout can proceed.
+export function productsRequiringApproval(items: CartItem[]): string[] {
+  return items.filter(item => {
+    if (!item.discount) return false
+    const line = calculateDiscountedLine(item.unitPriceCents, item.quantity, item.taxRateBps, item.discount)
+    return discountNeedsManagerApproval(line.subtotalCents, line.discountAppliedCents)
+  }).map(item => item.productId)
+}
+
+// True when a recorded manager approval still matches the exact cart and permission version
+// it was granted for. Any cart edit (or a permission-version change) invalidates it.
+export function approvalIsCurrent(approval: ManagerApproval | null, items: CartItem[], permissionVersion: number): boolean {
+  return Boolean(approval) && approval!.permissionVersion === permissionVersion && approval!.cartSignature === cartSignature(items)
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error'
@@ -40,13 +77,20 @@ export interface PosStore {
 
   // Cart
   items: CartItem[]
-  addItem: (product: Omit<CartItem, 'quantity'>) => void
+  addItem: (product: Omit<CartItem, 'quantity' | 'discount'>) => void
   removeItem: (productId: string) => void
   incrementItem: (productId: string) => void
   decrementItem: (productId: string) => void
   clearCart: () => void
   selectedCustomer: LocalCustomer | null
   selectCustomer: (customer: LocalCustomer | null) => void
+
+  // Line discounts (FEAT-CART-02) and the manager evidence that authorizes them (FEAT-AUTH-02).
+  // Any cart mutation above clears managerApproval; setLineDiscount does too, since it changes the signature.
+  setLineDiscount: (productId: string, discount: LineDiscount) => void
+  managerApproval: ManagerApproval | null
+  setManagerApproval: (approval: ManagerApproval) => void
+  clearManagerApproval: () => void
 
   // Totals (derived)
   totals: () => CartTotals
@@ -85,19 +129,21 @@ export const usePosStore = create<PosStore>((set, get) => ({
               ? { ...i, quantity: Math.min(10_000, i.quantity + 1) }
               : i,
           ),
+          managerApproval: null,
         }
       }
-      return { items: [...state.items, { ...product, quantity: 1 }] }
+      return { items: [...state.items, { ...product, quantity: 1, discount: null }], managerApproval: null }
     }),
 
   removeItem: (productId) =>
-    set((state) => ({ items: state.items.filter((i) => i.productId !== productId) })),
+    set((state) => ({ items: state.items.filter((i) => i.productId !== productId), managerApproval: null })),
 
   incrementItem: (productId) =>
     set((state) => ({
       items: state.items.map((i) =>
         i.productId === productId ? { ...i, quantity: Math.min(10_000, i.quantity + 1) } : i,
       ),
+      managerApproval: null,
     })),
 
   decrementItem: (productId) =>
@@ -105,26 +151,37 @@ export const usePosStore = create<PosStore>((set, get) => ({
       const item = state.items.find((i) => i.productId === productId)
       if (!item) return state
       if (item.quantity <= 1) {
-        return { items: state.items.filter((i) => i.productId !== productId) }
+        return { items: state.items.filter((i) => i.productId !== productId), managerApproval: null }
       }
       return {
         items: state.items.map((i) =>
           i.productId === productId ? { ...i, quantity: i.quantity - 1 } : i,
         ),
+        managerApproval: null,
       }
     }),
 
-  clearCart: () => set({ items: [], selectedCustomer: null }),
+  clearCart: () => set({ items: [], selectedCustomer: null, managerApproval: null }),
+
+  setLineDiscount: (productId, discount) =>
+    set((state) => ({
+      items: state.items.map((i) => i.productId === productId ? { ...i, discount } : i),
+      managerApproval: null,
+    })),
+
+  managerApproval: null,
+  setManagerApproval: (approval) => set({ managerApproval: approval }),
+  clearManagerApproval: () => set({ managerApproval: null }),
 
   totals: () => {
     const { items } = get()
     if (items.length === 0) {
-      return { subtotalCents: 0, taxCents: 0, totalCents: 0 }
+      return { subtotalCents: 0, discountCents: 0, taxCents: 0, totalCents: 0 }
     }
     const lines = items.map((item) =>
-      calculateLine(item.unitPriceCents, item.quantity, item.taxRateBps),
+      calculateDiscountedLine(item.unitPriceCents, item.quantity, item.taxRateBps, item.discount),
     )
-    return sumLines(lines)
+    return sumDiscountedLines(lines)
   },
 
   syncStatus: 'idle',

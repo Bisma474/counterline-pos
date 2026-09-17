@@ -51,3 +51,38 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 .change { border-radius: 7px; background: #fff; border: 1px solid #f0ebe4; }
 .change b { color: #1d8b4c; font-family: 'DM Sans', sans-serif; font-weight: 800; }
 @media (max-width: 700px) { .sale-cart { position: static; max-height: none; } .payment-page { padding: 16px 8px; } .quick-tender { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Barcode scan feedback and duplicate-match picker (FEAT-CART-01). */
+.scan-toast { border-radius: 7px; background: #e4f5e8; color: #208a54; padding: 8px 12px; font-weight: 700; }
+.scan-picker { margin-top: 10px; border: 1px solid #e7e1d8; border-radius: 9px; background: #fffdf9; box-shadow: 0 8px 22px rgba(66,45,22,.08); overflow: hidden; }
+.scan-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #efe9de; font-size: 13px; }
+.scan-picker ul { list-style: none; margin: 0; padding: 6px 10px; display: grid; gap: 4px; max-height: 240px; overflow: auto; }
+.scan-picker li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 4px; font-size: 12px; }
+.scan-picker li small { color: #756f63; margin-left: 6px; }
+
+/* Cart line discounts (FEAT-CART-02): compact toggle button, popover, muted coral discount amount. */
+.cart-line-wrap { border-bottom: 1px solid #e2dbcd; padding-bottom: 10px; margin-bottom: 4px; }
+.cart-line-wrap .cart-line { border-bottom: 0; padding-bottom: 4px; }
+.cart-line-discount-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 4px; }
+.discount-button { border: 1px solid #e1dbd1; border-radius: 999px; background: #fff; color: #344054; font-size: 11px; font-weight: 700; padding: 5px 11px; min-height: 30px; }
+.discount-button:hover, .discount-button.active { border-color: #ec6b24; color: #bb4c16; background: #fff5ed; }
+.cart-line-money { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
+.cart-line-original { color: #98917f; text-decoration: line-through; }
+.cart-line-discount-amount { color: #bb4c16; background: #fbe6d6; border-radius: 999px; padding: 2px 8px; font-weight: 700; }
+.cart-line-net { font-family: 'DM Sans', sans-serif; font-weight: 800; color: #17212d; }
+.cart-line-approval-flag { margin: 2px 0 0; color: #bb4c16; font-size: 11px; font-weight: 700; }
+.cart-line-approval-flag.approved { color: #208a54; }
+.discount-popover { margin-top: 8px; padding: 12px; border: 1px solid #e7e1d8; border-radius: 9px; background: #fffdf9; box-shadow: 0 8px 22px rgba(66,45,22,.08); display: grid; gap: 10px; }
+.discount-toggle { display: inline-flex; border: 1px solid #e1dbd1; border-radius: 8px; overflow: hidden; width: max-content; }
+.discount-toggle button { min-width: 44px; min-height: 34px; border: 0; background: #fff; font-weight: 800; color: #344054; }
+.discount-toggle button.active { background: #ec6b24; color: #fff; }
+.discount-popover label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; color: #344054; }
+.discount-popover input { min-height: 42px; border: 1px solid #d4d8df; border-radius: 7px; padding: 0 10px; font-size: 15px; }
+.discount-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.discount-actions .cta { min-width: 0; min-height: 38px; padding: 0 14px; }
+.discount-actions .secondary-cta { min-height: 38px; }
+.totals-discount b { color: #bb4c16; }
+
+/* Manager approval banner inside the cart when a discount exceeds cashier authority. */
+.manager-approval-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 10px 0; padding: 10px 12px; border-radius: 8px; background: #fff0e2; color: #9c4b12; font-size: 12px; font-weight: 700; }
+@media (max-width: 700px) { .discount-actions { justify-content: stretch; } .discount-actions button { flex: 1; } .manager-approval-banner { flex-direction: column; align-items: stretch; text-align: center; } }

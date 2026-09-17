@@ -76,6 +76,8 @@ export interface LocalOrder {
   accepted_checkpoint: string | null
   failure_reason: string | null
   customer_id?: string | null
+  manager_id?: string | null          // approving manager's employee id, when any line needed approval
+  manager_approved_at?: string | null // ISO 8601, when any line needed approval
 }
 
 export interface LocalCustomer {
@@ -100,6 +102,10 @@ export interface LocalOrderItem {
   catalog_version: number
   quantity: number
   subtotal_cents: number        // integer cents
+  discount_kind?: 'percent' | 'fixed' | null
+  discount_value?: number | null       // bps for percent, integer cents for fixed
+  discount_applied_cents?: number      // integer cents; absent on older records means zero
+  taxable_cents?: number        // integer cents; subtotal_cents minus discount_applied_cents
   tax_cents: number             // integer cents
   total_cents: number           // integer cents
 }
@@ -211,6 +217,20 @@ export class CounterlineDatabase extends Dexie {
       const outbox = transaction.table<OutboxEntry, number>('outbox')
       for (const entry of await outbox.toArray()) {
         await outbox.update(entry.id!, { entity_type: 'order', depends_on: [] })
+      }
+    })
+
+    // No new indexes: discount and manager-approval fields are read with `?? 0` / `?? null` defaults,
+    // but backfill existing rows so every record carries an explicit value.
+    this.version(5).stores({}).upgrade(async transaction => {
+      const orders = transaction.table<LocalOrder, string>('orders')
+      for (const order of await orders.toArray()) {
+        await orders.update(order.id, { discount_cents: order.discount_cents ?? 0, manager_id: order.manager_id ?? null, manager_approved_at: order.manager_approved_at ?? null })
+      }
+      const orderItems = transaction.table<LocalOrderItem, string>('order_items')
+      for (const item of await orderItems.toArray()) {
+        await orderItems.update(item.id, { discount_kind: item.discount_kind ?? null, discount_value: item.discount_value ?? null,
+          discount_applied_cents: item.discount_applied_cents ?? 0, taxable_cents: item.taxable_cents ?? item.subtotal_cents })
       }
     })
   }
