@@ -131,15 +131,31 @@ async function createProduct(req: import('express').Request, res: import('expres
         if (!chk.rowCount) throw new ApiError(422, 'validation_failed', 'Tax rate does not belong to this store.')
       }
 
-      // Insert product
-      const productRes = await client.query(
-        `insert into public.pos_products
-          (store_id, sku, barcode, name, category_id, tax_rate_id, unit_price_cents, active, revision)
-         values ($1,$2,$3,$4,$5,$6,$7,true,1)
-         returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
-                   unit_price_cents::text as unit_price_cents, active, revision::text as revision`,
-        [storeId, sku, rawBarcode, name, resolvedCategoryId, taxRateId, priceCents],
+      // Reject a duplicate SKU up front with a clear message (the unique constraint below is
+      // the authoritative guard for the race case, caught right after the insert).
+      const skuChk = await client.query(
+        'select 1 from public.pos_products where store_id=$1 and sku=$2',
+        [storeId, sku],
       )
+      if (skuChk.rowCount) throw new ApiError(409, 'sku_conflict', 'A product with this SKU already exists in this store.')
+
+      // Insert product
+      let productRes
+      try {
+        productRes = await client.query(
+          `insert into public.pos_products
+            (store_id, sku, barcode, name, category_id, tax_rate_id, unit_price_cents, active, revision)
+           values ($1,$2,$3,$4,$5,$6,$7,true,1)
+           returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
+                     unit_price_cents::text as unit_price_cents, active, revision::text as revision`,
+          [storeId, sku, rawBarcode, name, resolvedCategoryId, taxRateId, priceCents],
+        )
+      } catch (insertReason) {
+        if (typeof insertReason === 'object' && insertReason !== null && 'code' in insertReason && (insertReason as { code: string }).code === '23505') {
+          throw new ApiError(409, 'sku_conflict', 'A product with this SKU already exists in this store.')
+        }
+        throw insertReason
+      }
       const row = productRes.rows[0] as {
         id: string; store_id: string; sku: string; barcode: string | null
         name: string; category_id: string | null; tax_rate_id: string | null

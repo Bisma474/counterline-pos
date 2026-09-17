@@ -527,6 +527,14 @@
 }
 .pc-drawer-close:hover { background: rgba(205,96,72,.3); color: #fff; }
 
+/* Form wrapper — keeps body/footer participating in the drawer's flex column */
+.pc-drawer-form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Drawer body */
 .pc-drawer-body {
   flex: 1;

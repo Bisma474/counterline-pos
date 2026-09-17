@@ -6,7 +6,7 @@
  * - DM Serif Display, DM Sans, DM Mono
  * - Offline-first liveQuery via Dexie, integer cents
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { liveQuery } from 'dexie'
 import { formatCents, parseCents } from '../../../../packages/domain/src/money'
 import { posDb, type LocalCategory, type LocalProduct, type LocalTaxRate } from '../lib/db'
@@ -207,7 +207,7 @@ export function ProductCatalogScreen() {
     return e
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const fieldErrs = validate()
     if (Object.keys(fieldErrs).length) {
@@ -591,6 +591,7 @@ export function ProductCatalogScreen() {
             </div>
 
             {/* Body */}
+            <form className="pc-drawer-form" onSubmit={(e) => void handleSubmit(e)}>
             <div className="pc-drawer-body">
               {submitErr && (
                 <div className="pc-alert error" role="alert">
@@ -762,18 +763,14 @@ export function ProductCatalogScreen() {
 
             {/* Footer */}
             <div className="pc-drawer-foot">
-              <button
-                type="button"
-                className="pc-submit"
-                disabled={busy || !storeId}
-                onClick={(e) => void handleSubmit(e as unknown as React.FormEvent)}
-              >
+              <button type="submit" className="pc-submit" disabled={busy || !storeId}>
                 {busy ? 'Saving product…' : 'Save to Catalog'}
               </button>
               <button type="button" className="pc-cancel" onClick={closeDrawer} disabled={busy}>
                 Cancel
               </button>
             </div>
+            </form>
           </div>
         </div>
       )}
