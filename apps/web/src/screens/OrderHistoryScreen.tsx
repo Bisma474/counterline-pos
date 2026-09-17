@@ -61,25 +61,10 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     {!scope.error && !error && orders === undefined && <p role="status">Loading saved orders...</p>}
     {orders?.length === 0 && <p>No orders have been saved for this store in this browser yet.</p>}
     {Boolean(orders?.length) && !visible.length && <p>No orders match your search.</p>}
-    <div className="history-list">{visible.map(order => {
-      // Determine if this order can be retried
-      const canRetry = order.sync_status === 'pending' && Boolean(order.failure_reason)
-      // Human-friendly failure message
-      const failureMsg = order.failure_reason
-        ? order.failure_reason.includes('customer link')
-            ? order.failure_reason   // already descriptive from our new sync core message
-            : order.failure_reason
-        : null
-      return (
-        <article key={order.id}>
-          <div><strong>{order.receipt_number}</strong><small>{saleDate(order)} | {order.timezone_snapshot}</small></div>
-          <b>{formatCents(order.total_cents, order.currency)}</b>
-          <span className={`order-state ${order.sync_status}`}>{syncLabel(order)}</span>
-          <Link className="receipt-detail-link" to={`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(order.id)}`}>View receipt / print</Link>
-          {canRetry && <button type="button" disabled={busy} onClick={() => void sync(order.id)}>Retry now</button>}
-          {failureMsg && <p className="history-reason">{failureMsg}</p>}
-        </article>
-      )
-    })}</div>
+    <div className="history-list">{visible.map(order => <article key={order.id}><div><strong>{order.receipt_number}</strong><small>{saleDate(order)} | {order.timezone_snapshot}</small></div>
+      <b>{formatCents(order.total_cents, order.currency)}</b><span className={`order-state ${order.sync_status}`}>{syncLabel(order)}</span>
+      <Link className="receipt-detail-link" to={`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(order.id)}`}>View receipt / print</Link>
+      {order.sync_status === 'pending' && order.failure_reason && <button type="button" disabled={busy} onClick={() => void sync(order.id)}>Retry now</button>}
+      {order.failure_reason && <p className="history-reason">{order.failure_reason}</p>}</article>)}</div>
   </section>
 }

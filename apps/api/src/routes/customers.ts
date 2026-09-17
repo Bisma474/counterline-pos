@@ -94,26 +94,8 @@ async function push(req: Request, res: Response, terminal = false) {
         res.json({ ...replay.rows[0].result_json, status: 'replayed' })
         return
       }
-      // Idempotency: if the same UUID already exists for the same store, treat as a successful replay.
-      // This happens when the client retries a push that previously timed-out or was partially committed.
-      const existing = await client.query<{ store_id: string }>(
-        'select store_id from public.pos_customers where id=$1',
-        [input.customer.id]
-      )
-      if (existing.rows[0]) {
-        if (existing.rows[0].store_id !== storeId)
-          throw new ApiError(409, 'customer_id_conflict', 'This customer ID exists in a different store.')
-        // Same store — treat as idempotent success so dependent orders can proceed
-        await client.query('commit')
-        const cp = await db.query<{ pos: string }>(
-          'select last_position::text as pos from public.pos_sync_feed_state where store_id=$1',
-          [storeId]
-        )
-        res.json({ status: 'replayed', operation_id: input.operationId,
-          customer_id: input.customer.id,
-          accepted_checkpoint: cp.rows[0]?.pos ?? '0' })
-        return
-      }
+      const existing = await client.query('select 1 from public.pos_customers where id=$1', [input.customer.id])
+      if (existing.rowCount) throw new ApiError(409, 'customer_id_conflict', 'This customer ID already exists.')
       await client.query(`insert into public.pos_customers(id,store_id,name,phone_normalized,client_generated_at)
         values ($1,$2,$3,$4,$5)`, [input.customer.id, storeId, input.customer.name, input.customer.phone, input.customer.generatedAt])
       const position = (BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position) + 1n).toString()

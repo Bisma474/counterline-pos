@@ -117,12 +117,7 @@ async function push(req: import('express').Request, res: import('express').Respo
       if (products.rowCount !== productIds.length) throw new ApiError(422, 'cross_store_reference', 'An item refers to a product outside this store.')
       if (operation.order.customer_id) {
         const customer = await client.query('select 1 from public.pos_customers where store_id=$1 and id=$2', [operation.storeId, operation.order.customer_id])
-        if (!customer.rowCount) {
-          // Customer was rejected or not yet synced — accept the order without the customer link
-          // rather than blocking this paid sale from syncing permanently.
-          // The local Dexie record retains the customer reference for the cashier's view.
-          operation.order.customer_id = null
-        }
+        if (!customer.rowCount) throw new ApiError(422, 'cross_store_reference', 'Customer is not accepted for this store yet.')
       }
       await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
         subtotal_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
