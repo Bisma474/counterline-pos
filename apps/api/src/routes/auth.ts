@@ -23,6 +23,19 @@ export async function requireStoreMember(req: Request, storeId: string) {
   return data.user.id
 }
 
+/** Like requireStoreMember, but also requires the caller's role in this store to be owner or manager. */
+export async function requireStoreManager(req: Request, storeId: string): Promise<string> {
+  const userId = await requireStoreMember(req, storeId)
+  const result = await db.query<{ role: string }>(
+    'select role from public.store_memberships where store_id=$1 and user_id=$2 and active=true',
+    [storeId, userId],
+  )
+  if (!['owner', 'manager'].includes(result.rows[0]?.role ?? '')) {
+    throw new ApiError(403, 'authorization_failed', 'This action requires an owner or manager role.')
+  }
+  return userId
+}
+
 export function sendApiError(res: import('express').Response, reason: unknown) {
   if (reason instanceof ApiError) res.status(reason.status).json({ status: 'rejected', code: reason.code, message: reason.message })
   else {
