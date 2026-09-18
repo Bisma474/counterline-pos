@@ -6,6 +6,7 @@
  * no device list, no "manage employees" or "terminal provisioning" links.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { liveQuery } from 'dexie'
 import { DAY } from '../terminal-auth/policy'
 import { browserCapabilities, type BrowserCapabilities, type ShellStatus, type StorageStatus, type TerminalIdentity } from '../terminal-auth/hardware/browserCapabilities'
 import { StorageSettings } from '../terminal-auth/hardware/StorageSettings'
@@ -29,6 +30,7 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
   const [snapshot, setSnapshot] = useState<Snapshot>()
   const [checking, setChecking] = useState(false)
   const [storeName, setStoreName] = useState('')
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const mounted = useRef(false)
   const generation = useRef(0)
 
@@ -58,6 +60,14 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
   }, [adapter, inspect])
 
   const terminal = snapshot?.terminal
+  // FEAT-SET-01: last successful sync, live so it updates without a manual "Check device
+  // status" click once the sync engine (running elsewhere in the app) completes a push.
+  useEffect(() => {
+    if (!terminal?.storeId) { setLastSyncedAt(null); return }
+    const subscription = liveQuery(() => posDb.sync_metadata.get(`last_synced_at:${terminal.storeId}`))
+      .subscribe({ next: row => setLastSyncedAt(row?.value ?? null) })
+    return () => subscription.unsubscribe()
+  }, [terminal?.storeId])
   const validated = Date.parse(terminal?.validatedAt ?? '')
   const expiry = validated > 0 ? validated + 7 * DAY : NaN
   const clockInvalid = Boolean(terminal && snapshot && (snapshot.now < terminal.lastSeen || snapshot.now < validated))
@@ -80,6 +90,7 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
         <div><dt>Terminal name</dt><dd>{terminal.name}</dd></div>
         <div><dt>Store</dt><dd>{storeName || terminal.storeId}</dd></div>
         <div><dt>Receipt prefix</dt><dd>{terminal.receiptPrefix}</dd></div>
+        <div><dt>Last successful sync</dt><dd>{lastSyncedAt ? dateLabel(Date.parse(lastSyncedAt)) : 'Not yet synced on this device'}</dd></div>
         <div><dt>Last authorization validation</dt><dd>{dateLabel(validated)}</dd></div>
         <div><dt>Offline authorization expiry</dt><dd>{dateLabel(expiry)}</dd></div>
         <div><dt>Signed in as</dt><dd>{terminal.cashierName ?? 'Terminal locked'}</dd></div>
