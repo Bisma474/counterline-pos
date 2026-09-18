@@ -10,7 +10,7 @@ const navigation = [
   { label: 'Products', icon: '○' },
   { label: 'Orders', to: '/pos/orders', icon: '○' },
   { label: 'Customers', to: '/pos/customers', icon: '♧' },
-  { label: 'Settings', icon: '○' },
+  { label: 'Settings', to: '/pos/settings', icon: '○' },
 ]
 
 export function CashierPosLayout({ children }: { children: ReactNode }) {
