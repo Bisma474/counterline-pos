@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { verifier, verify, digest, token, pinValue, uuid } from './security.js'
-import { DAY, permissions, verifyOffline } from '../../../web/src/terminal-auth/policy.js'
+import { CLOCK_SKEW_TOLERANCE_MS, DAY, permissions, verifyOffline } from '../../../web/src/terminal-auth/policy.js'
 import type { Employee, CashierSession } from '../../../web/src/terminal-auth/types.js'
 
 test('salted PIN verifiers agree between server and browser Web Crypto', async () => {
@@ -24,6 +24,11 @@ test('authorization expires exactly at 72 hours and seven days; rollback/version
   assert.deepEqual(permissions(session, employee, validated + 3 * DAY, validated), { valid: true, managerApproval: false })
   assert.equal(permissions(session, employee, validated + 7 * DAY, validated).valid, false)
   assert.equal(permissions(session, employee, validated - 1, validated).valid, false)
+  // A few seconds/minutes of client clock skew behind the server-stamped validation time is
+  // tolerated; a rollback beyond that tolerance is not. lastSeen tracks now here so only the
+  // skew tolerance (not the separate local-rollback check) is under test.
+  assert.equal(permissions(session, employee, validated - CLOCK_SKEW_TOLERANCE_MS, validated - CLOCK_SKEW_TOLERANCE_MS).valid, true)
+  assert.equal(permissions(session, employee, validated - CLOCK_SKEW_TOLERANCE_MS - 1, validated - CLOCK_SKEW_TOLERANCE_MS - 1).valid, false)
   assert.equal(permissions(session, { ...employee, permission_version: 3 }, validated, validated).valid, false)
   assert.equal(permissions(session, undefined, validated, validated).valid, false)
 })

@@ -1,8 +1,12 @@
 import type { CashierSession, Employee } from './types'
 export const DAY = 86_400_000
+// Absorbs ordinary client/server clock drift (seconds, from imperfect NTP sync) without weakening
+// the multi-day rollback guard: a real clock-rollback attempt to extend the 7-day/72-hour windows
+// needs hours of skew, far past this tolerance.
+export const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000
 export function permissions(session: CashierSession, employee: Employee | undefined, now: number, lastSeen: number) {
   const age = now - Date.parse(session.last_server_validated_at)
-  const valid = Boolean(employee && employee.id === session.employee_id && employee.permission_version === session.permission_version && now >= lastSeen && age >= 0 && age < 7 * DAY)
+  const valid = Boolean(employee && employee.id === session.employee_id && employee.permission_version === session.permission_version && now >= lastSeen && age >= -CLOCK_SKEW_TOLERANCE_MS && age < 7 * DAY)
   return { valid, managerApproval: valid && employee?.role === 'manager' && age < 3 * DAY }
 }
 export async function verifyOffline(pin: string, employee: Employee) {
