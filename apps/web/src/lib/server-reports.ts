@@ -58,3 +58,17 @@ export function fetchOrdersPage(storeId: string, date: string, cursor?: string |
   if (limit) params.set('limit', String(limit))
   return request<ServerOrdersPage>(`/reports/orders?${params.toString()}`)
 }
+
+export interface ServerOversoldProduct {
+  id: string
+  name: string
+  sku: string
+  current_stock: number
+}
+
+// Server truth for oversell: reflects pos_stock across every device that has synced, unlike the
+// local low-stock calculation in reporting.ts which only reflects this browser's synced stock.
+export async function fetchOversold(storeId: string): Promise<ServerOversoldProduct[]> {
+  const result = await request<{ products: ServerOversoldProduct[] }>(`/reports/oversold?store_id=${encodeURIComponent(storeId)}`)
+  return result.products
+}
