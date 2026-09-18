@@ -166,3 +166,26 @@ async function ordersHandler(req: Request, res: Response) {
   } catch (reason) { sendApiError(res, reason) }
 }
 reportsRouter.get('/orders', (req, res) => void ordersHandler(req, res))
+
+export interface OversoldProduct { id: string; name: string; sku: string; current_stock: number }
+
+// Server-truth oversell list: pos_stock reflects every accepted sale across all devices, unlike a
+// single browser's synced projection.
+export async function loadOversold(storeId: string): Promise<OversoldProduct[]> {
+  const result = await db.query<OversoldProduct>(`
+    select p.id, p.name, p.sku, s.current_stock
+    from public.pos_stock s
+    join public.pos_products p on p.store_id = s.store_id and p.id = s.product_id
+    where s.store_id = $1 and s.current_stock < 0
+    order by s.current_stock asc`, [storeId])
+  return result.rows
+}
+
+async function oversoldHandler(req: Request, res: Response) {
+  try {
+    const storeId = storeIdParam(req)
+    await requireReportAccess(req, storeId)
+    res.json({ products: await loadOversold(storeId) })
+  } catch (reason) { sendApiError(res, reason) }
+}
+reportsRouter.get('/oversold', (req, res) => void oversoldHandler(req, res))

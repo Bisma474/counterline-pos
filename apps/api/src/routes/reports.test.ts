@@ -8,7 +8,7 @@ import { PGlite } from '@electric-sql/pglite'
 // Import the route module after setting a harmless pool URL; pure validation tests never open a
 // connection, and the PGlite-backed tests below monkey-patch db.query/db.connect before use.
 process.env.DATABASE_URL ??= 'postgresql://localhost:5432/validation_only'
-const { storeIdParam, dateParam, loadDailySummary, loadOrdersPage } = await import('./reports.js')
+const { storeIdParam, dateParam, loadDailySummary, loadOrdersPage, loadOversold } = await import('./reports.js')
 const { db } = await import('../db.js')
 
 function reqWith(query: Record<string, unknown>) {
@@ -116,9 +116,11 @@ test('loadOrdersPage paginates by cursor and joins the cashier name', async () =
     }
 
     const orderIds: string[] = []
+    let attributedOrderId = ''
     for (let i = 0; i < 3; i++) {
       const id = randomUUID()
       orderIds.push(id)
+      if (i === 0) attributedOrderId = id
       await database.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
         subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,employee_id)
         values ($1,$2,$3,'USD','One','UTC',500,0,0,500,1,'2026-09-18T10:00:00.000Z',$4)`,
@@ -138,10 +140,44 @@ test('loadOrdersPage paginates by cursor and joins the cashier name', async () =
     assert.equal(second.next_cursor, null)
     assert.equal(second.orders[0].id, orderIds[2])
 
-    const attributed = first.orders.find(o => o.id === orderIds[0])!
+    const attributed = [...first.orders, ...second.orders].find(o => o.id === attributedOrderId)!
     assert.equal(attributed.employeeId, employee)
     assert.equal(attributed.cashierName, 'Casey')
     assert.equal(attributed.paymentMethod, 'card')
     assert.equal(attributed.itemCount, 0)
+  } finally { await database.close() }
+})
+
+test('loadOversold returns only negative-stock products, most oversold first', async () => {
+  const database = new PGlite()
+  try {
+    await database.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+      create schema auth; create table auth.users(id uuid primary key,raw_user_meta_data jsonb);
+      create function auth.uid() returns uuid language sql as 'select null::uuid';
+      create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
+    for (const name of chain) {
+      const sql = (await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', '')
+      await database.exec(sql)
+    }
+    const owner = randomUUID(), store = randomUUID(), low = randomUUID(), critical = randomUUID(), healthy = randomUUID()
+    await database.query('insert into auth.users(id) values ($1)', [owner])
+    await database.query("insert into public.stores(id,name,code,created_by) values ($1,'One','oversold',$2)", [store, owner])
+    await database.query(`insert into public.pos_products(id,store_id,sku,name,unit_price_cents) values
+      ($1,$2,'LOW','Low item',100), ($3,$2,'CRIT','Critical item',100), ($4,$2,'OK','Healthy item',100)`,
+      [low, store, critical, healthy])
+    await database.query(`insert into public.pos_stock(store_id,product_id,current_stock) values
+      ($1,$2,-2), ($1,$3,-10), ($1,$4,5)`, [store, low, critical, healthy])
+
+    const fixture = db as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }> }
+    fixture.query = async (sql: string, params?: unknown[]) => {
+      const result = await database.query(sql, params)
+      return { rows: result.rows, rowCount: Math.max(result.affectedRows ?? 0, result.rows.length) }
+    }
+
+    const oversold = await loadOversold(store)
+    assert.equal(oversold.length, 2)
+    assert.equal(oversold[0].sku, 'CRIT')
+    assert.equal(oversold[0].current_stock, -10)
+    assert.equal(oversold[1].sku, 'LOW')
   } finally { await database.close() }
 })
