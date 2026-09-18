@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { requireSupabase, supabase } from '../lib/supabase'
+import { activeStoreId } from '../lib/catalog'
 import { request } from './api'
 import { readTerminal, type TerminalCache } from './cache'
 import { TerminalState } from './TerminalStatus'
@@ -38,14 +39,18 @@ export function SettingsOverview() {
       const { data: { user }, error: userError } = await supabase.auth.getUser()
       if (userError) throw userError
       if (!user) throw new Error('Sign in with your owner or manager email account.')
-      const { data, error: membershipError } = await supabase.from('store_memberships').select('store_id, role').eq('user_id', user.id).eq('active', true).limit(1)
+      // Resolve the account's chosen store through the same activeStoreId() every other screen
+      // uses, instead of independently re-picking "any active membership, limit 1" here — that
+      // used to let Settings show a different store than Register/Dashboard for a multi-store user.
+      const storeId = await activeStoreId()
+      const { data, error: membershipError } = await supabase.from('store_memberships').select('role').eq('user_id', user.id).eq('store_id', storeId).eq('active', true).limit(1)
       if (membershipError) throw membershipError
-      const membership = data?.[0]
-      if (!membership) throw new Error('No active store membership was found.')
-      setAccess({ storeId: membership.store_id, role: membership.role })
-      await loadTeam(membership.store_id)
-      if (membership.role === 'owner' || membership.role === 'manager') {
-        const [nextManagement, nextTerminal] = await Promise.all([request<Management>(`/terminal-auth/manage/${membership.store_id}`, undefined, true), readTerminal()])
+      const role = data?.[0]?.role
+      if (!role) throw new Error('No active store membership was found.')
+      setAccess({ storeId, role })
+      await loadTeam(storeId)
+      if (role === 'owner' || role === 'manager') {
+        const [nextManagement, nextTerminal] = await Promise.all([request<Management>(`/terminal-auth/manage/${storeId}`, undefined, true), readTerminal()])
         setManagement(nextManagement); setTerminal(nextTerminal)
       }
     } catch (reason) { setLoadError(reason instanceof Error ? reason.message : 'Unable to load store settings.') }
