@@ -52,7 +52,7 @@ async function claimOne(storeId: string): Promise<OutboxEntry | undefined> {
 }
 async function finish(entry: OutboxEntry, accepted: boolean, code: string | null, message: string | null,
   checkpoint: string | null, failureKind: OutboxEntry['failure_kind']) {
-  await posDb.transaction('rw', posDb.outbox, posDb.orders, posDb.customers, posDb.stock_adjustments, async () => {
+  await posDb.transaction('rw', posDb.outbox, posDb.orders, posDb.customers, posDb.stock_adjustments, posDb.sync_metadata, async () => {
     const current = await posDb.outbox.get(entry.id!)
     if (!current || current.lease_owner !== owner) return
     await posDb.outbox.put({ ...current, status: accepted ? 'synced' : 'failed', failure_kind: failureKind,
@@ -67,6 +67,10 @@ async function finish(entry: OutboxEntry, accepted: boolean, code: string | null
     if (accepted) {
       const adjustments = await posDb.stock_adjustments.where('operation_id').equals(entry.operation_id).toArray()
       for (const adjustment of adjustments) await posDb.stock_adjustments.put({ ...adjustment, accepted_checkpoint: checkpoint })
+      // FEAT-SET-01: the terminal settings screen needs a "last successful sync" timestamp,
+      // scoped per store since one browser's IndexedDB can hold data for a device that
+      // moved between stores after reprovisioning.
+      await posDb.sync_metadata.put({ key: `last_synced_at:${current.store_id}`, value: new Date().toISOString() })
     }
   })
 }
