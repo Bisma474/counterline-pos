@@ -9,7 +9,7 @@ import { Link } from 'react-router-dom'
 import { liveQuery } from 'dexie'
 import { posDb, type OutboxEntry } from '../lib/db'
 import { retryOrder } from '../lib/order-sync'
-import { classifySyncState, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
+import { classifySyncState, canRetrySync, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
 import { receiptStore, useReceiptStore } from '../receipts/useReceiptStore'
 import '../receipts/receipts.css'
 
@@ -67,6 +67,7 @@ export function SyncCenterScreen({ terminal = false }: { terminal?: boolean }) {
   const counts: Record<SyncState, number> = { pending: 0, in_flight: 0, blocked: 0, rejected: 0, synced: 0 }
   for (const entry of entries ?? []) counts[classifySyncState(entry)]++
   const visible = (entries ?? []).filter(entry => filter === 'all' || classifySyncState(entry) === filter)
+  const byOperationId = new Map((entries ?? []).map(entry => [entry.operation_id, entry]))
 
   return <section className="order-history receipt-history"><p className="kicker">SYNC DIAGNOSTICS</p><h1>Sync Center.</h1>
     <p className="screen-note">Every queued operation for this store in this browser, exactly as the sync engine sees it. Nothing here can be dismissed or deleted while unsynced.</p>
@@ -89,13 +90,20 @@ export function SyncCenterScreen({ terminal = false }: { terminal?: boolean }) {
 
     <div className="history-list">{visible.map(entry => {
       const state = classifySyncState(entry)
-      const canRetry = state === 'pending' || state === 'blocked'
+      // Mirrors retryOrderForStore's own gate: every failure kind except a genuine server-side
+      // 'validation' rejection is retryable, including 'authentication' once signed back in.
+      const canRetry = canRetrySync(entry)
+      const waitingOnBackoff = state !== 'synced' && state !== 'in_flight' && entry.next_attempt_at > new Date().toISOString()
+      const dependencyLabels = (entry.depends_on ?? []).map(id => byOperationId.get(id) ? entryLabel(byOperationId.get(id)!) : 'another queued operation')
       return <article key={entry.id}>
         <div><strong>{entryLabel(entry)}</strong><small>{new Date(entry.created_at).toLocaleString()} · attempt {entry.attempt_count} · {entry.entity_type ?? 'order'}</small></div>
         <span className={`order-state ${state}`}>{SYNC_STATE_LABELS[state]}</span>
         {entry.entity_type !== 'customer' && <Link className="receipt-detail-link" to={`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(entry.order_id)}`}>View receipt</Link>}
         {canRetry && <button type="button" disabled={busyId !== null} onClick={() => void retry(entry)}>{busyId === (entry.id ?? -1) ? 'Retrying…' : 'Retry now'}</button>}
         {entry.failure_reason && <p className="history-reason">{entry.failure_reason}{entry.reason_code ? ` (${entry.reason_code})` : ''}</p>}
+        {entry.failure_kind === 'authentication' && <p className="history-reason">Sign in again on this terminal, then retry — this entry is not permanently rejected.</p>}
+        {dependencyLabels.length > 0 && <p className="history-reason">Depends on: {dependencyLabels.join(', ')}</p>}
+        {waitingOnBackoff && <p className="history-reason">Next automatic retry around {new Date(entry.next_attempt_at).toLocaleTimeString()}.</p>}
       </article>
     })}</div>
   </section>

@@ -4,7 +4,7 @@ import Dexie, { liveQuery } from 'dexie'
 import { formatCents } from '../../../../packages/domain/src/money'
 import { posDb, type LocalOrder, type OutboxEntry } from '../lib/db'
 import { pushPendingOrders, retryOrder } from '../lib/order-sync'
-import { classifySyncState, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
+import { classifySyncState, canRetrySync, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
 import { saleDate, saleDay } from '../receipts/data'
 import { receiptStore, useReceiptStore } from '../receipts/useReceiptStore'
 import '../receipts/receipts.css'
@@ -70,8 +70,11 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     <div className="history-list">{visible.map(order => {
       const outboxEntry = outboxByOrder.get(order.id)
       const state: SyncState = outboxEntry ? classifySyncState(outboxEntry) : order.sync_status === 'synced' ? 'synced' : order.sync_status === 'failed' ? 'rejected' : 'pending'
-      // Retrying is only useful for states the sync engine or a manual retry can move forward.
-      const canRetry = (state === 'pending' || state === 'blocked') && Boolean(order.failure_reason)
+      // Mirror retryOrderForStore's own gate (order-sync-core.ts): every failure kind except a
+      // genuine server-side 'validation' rejection can be retried, including 'authentication'
+      // once the cashier signs back in. Using the 5-way display state here would have wrongly
+      // disabled retry for authentication failures too, since both share the 'rejected' badge.
+      const canRetry = Boolean(order.failure_reason) && (outboxEntry ? canRetrySync(outboxEntry) : order.sync_status !== 'synced')
       const failureMsg = order.failure_reason
       return (
         <article key={order.id}>

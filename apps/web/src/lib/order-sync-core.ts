@@ -21,6 +21,14 @@ export const SYNC_STATE_LABELS: Record<SyncState, string> = {
   synced: 'Synced',
 }
 
+// The 'rejected' SyncState covers two different failure_kinds that the retry engine treats
+// differently: 'validation' is a genuine, permanent server rejection (retrying resends the same
+// invalid data), while 'authentication' just needs the cashier to sign back in — retryOrderForStore
+// already allows it. Mirror that exact rule here so the UI never disables a retry the engine supports.
+export function canRetrySync(entry: Pick<OutboxEntry, 'status' | 'failure_kind'>): boolean {
+  return entry.status !== 'synced' && entry.failure_kind !== 'validation'
+}
+
 export type PushReply = {
   ok: boolean
   status: number
