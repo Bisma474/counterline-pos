@@ -96,3 +96,5 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 .store-switcher-label { font: 500 9px 'DM Mono', monospace; letter-spacing: .12em; text-transform: uppercase; color: #9fb0a2; }
 .store-switcher select { width: 100%; background: #1c3829; border: 1px solid #3c5948; color: #fffdf3; padding: 8px 10px; font-size: 12px; border-radius: 4px; }
 .store-switcher select:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+/* Product photo on the register catalog card — same box as .product-art so cards don't reflow */
+.product-art-img { height: 115px; width: 100%; object-fit: cover; border-radius: 3px; background: #d9cfbc; }

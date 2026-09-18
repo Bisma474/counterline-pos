@@ -313,6 +313,16 @@
   flex-shrink: 0;
   text-transform: uppercase;
 }
+/* Product photo — same box as .pc-avatar so a row's layout doesn't shift when an image is present */
+.pc-avatar-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid #e7e1d8;
+  background: #fff;
+}
 .pc-prod-name {
   font: 600 13px 'DM Sans', sans-serif;
   color: #13261e;

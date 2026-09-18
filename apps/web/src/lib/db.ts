@@ -49,6 +49,7 @@ export interface LocalProduct {
   unit_price_cents: number   // integer cents
   active: boolean
   revision: number
+  image_url?: string | null  // optional; absent on older records means no image — show a placeholder
 }
 
 export interface LocalStock {
