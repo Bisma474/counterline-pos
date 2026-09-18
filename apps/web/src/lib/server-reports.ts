@@ -38,3 +38,23 @@ export interface ServerDailySummary {
 export function fetchDailySummary(storeId: string, date: string): Promise<ServerDailySummary> {
   return request<ServerDailySummary>(`/reports/daily-summary?store_id=${encodeURIComponent(storeId)}&date=${encodeURIComponent(date)}`)
 }
+
+export interface ServerOrderSummary {
+  id: string
+  receiptNumber: string
+  time: string
+  totalCents: number
+  paymentMethod: 'cash' | 'card' | 'unknown'
+  itemCount: number
+  syncStatus: 'synced'
+  employeeId: string | null
+  cashierName: string | null
+}
+export interface ServerOrdersPage { orders: ServerOrderSummary[]; next_cursor: string | null }
+
+export function fetchOrdersPage(storeId: string, date: string, cursor?: string | null, limit?: number): Promise<ServerOrdersPage> {
+  const params = new URLSearchParams({ store_id: storeId, date })
+  if (cursor) params.set('cursor', cursor)
+  if (limit) params.set('limit', String(limit))
+  return request<ServerOrdersPage>(`/reports/orders?${params.toString()}`)
+}
