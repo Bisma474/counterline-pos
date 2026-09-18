@@ -114,25 +114,26 @@ function useFinancialReport(day?: string) {
       setState(undefined)
       return
     }
-    setState(localState)
     void (async () => {
-      if (!(await isApiReachable())) return
-      try {
-        const summary = await fetchDailySummary(localState.storeId, localState.day)
-        if (!active) return
-        setState(current => current ? {
-          ...current,
-          report: {
+      let report = localState.report
+      if (await isApiReachable()) {
+        try {
+          const summary = await fetchDailySummary(localState.storeId, localState.day)
+          report = {
             ...summary,
-            pendingCount: current.report.pendingCount,
-            pendingAmountCents: current.report.pendingAmountCents,
-            rejectedCount: current.report.rejectedCount,
-            rejectedAmountCents: current.report.rejectedAmountCents,
-          },
-        } : current)
-      } catch {
-        // Server summary unavailable — keep the local calculation already set above.
+            pendingCount: localState.report.pendingCount,
+            pendingAmountCents: localState.report.pendingAmountCents,
+            rejectedCount: localState.report.rejectedCount,
+            rejectedAmountCents: localState.report.rejectedAmountCents,
+          }
+        } catch {
+          // Server summary unavailable — fall through to the local calculation.
+        }
       }
+      // Only commit once resolved, so a table change elsewhere in the store (e.g. a stock
+      // adjustment) that re-triggers this effect doesn't flash the totals down to the local-only
+      // figure while the server summary re-fetches; the previously merged state stays on screen.
+      if (active) setState({ ...localState, report })
     })()
     return () => {
       active = false
@@ -440,16 +441,8 @@ export function CashierDashboardScreen() {
   useEffect(() => {
     let active = true
     const checkApi = async () => {
-      if (!navigator.onLine) {
-        if (active) setApiReachable(false)
-        return
-      }
-      try {
-        const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
-        if (active) setApiReachable(response.ok)
-      } catch {
-        if (active) setApiReachable(false)
-      }
+      const reachable = await isApiReachable()
+      if (active) setApiReachable(reachable)
     }
     void checkApi()
     const timer = window.setInterval(() => void checkApi(), 15_000)
