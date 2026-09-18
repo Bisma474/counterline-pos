@@ -8,7 +8,7 @@
     "test": "tsx --test src/terminal-auth/*.test.ts",
     "test:integration": "tsx --test test/*.test.ts",
     "test:browser": "tsx test/browser-check.ts",
-    "test:orders": "node --test --import tsx src/routes/orders.test.ts"
+    "test:orders": "node --test --import tsx src/routes/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
