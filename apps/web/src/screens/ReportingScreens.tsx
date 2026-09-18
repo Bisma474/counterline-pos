@@ -19,6 +19,7 @@ import {
 } from '../lib/reporting'
 import { currentAccess } from '../terminal-auth/cache'
 import { configuredApiUrl } from '../lib/catalog'
+import { classifySyncState, type SyncState } from '../lib/order-sync-core'
 import './reporting.css'
 
 interface ReportState {
@@ -313,8 +314,7 @@ interface CashierDashboardState {
   storeId: string
   currency: string
   online: boolean
-  pending: number
-  rejected: number
+  syncCounts: Record<SyncState, number>
   shift: CashierShiftSummary
   recentOrders: RecentOrderSummary[]
   managerApproval: boolean
@@ -356,8 +356,10 @@ export function CashierDashboardScreen() {
           storeId: cache.device.store_id,
           currency,
           online: navigator.onLine,
-          pending: outbox.filter(entry => entry.status === 'pending').length,
-          rejected: outbox.filter(entry => entry.status === 'failed' || entry.failure_kind === 'validation').length,
+          syncCounts: outbox.filter(entry => entry.entity_type === 'order').reduce((counts, entry) => {
+            counts[classifySyncState(entry)]++
+            return counts
+          }, { pending: 0, in_flight: 0, blocked: 0, rejected: 0, synced: 0 } as Record<SyncState, number>),
           shift,
           recentOrders,
           managerApproval: policy.managerApproval,
@@ -518,18 +520,28 @@ export function CashierDashboardScreen() {
             </div>
             <div>
               <dt>Sync Outbox</dt>
-              <dd>{state.pending ? `${state.pending} pending sync` : 'All sales synced ✓'}</dd>
+              <dd>
+                {Object.values(state.syncCounts).every(count => !count) ? 'No sales queued yet' :
+                  state.syncCounts.pending + state.syncCounts.in_flight + state.syncCounts.blocked + state.syncCounts.rejected === 0 ? 'All sales synced ✓' :
+                  <span className="sync-breakdown">
+                    {state.syncCounts.pending > 0 && <span className="sync-chip pending">{state.syncCounts.pending} pending</span>}
+                    {state.syncCounts.in_flight > 0 && <span className="sync-chip in_flight">{state.syncCounts.in_flight} syncing</span>}
+                    {state.syncCounts.blocked > 0 && <span className="sync-chip blocked">{state.syncCounts.blocked} blocked</span>}
+                    {state.syncCounts.rejected > 0 && <span className="sync-chip rejected">{state.syncCounts.rejected} rejected</span>}
+                  </span>}
+              </dd>
             </div>
             <div>
               <dt>Manager Approval</dt>
               <dd>{state.managerApproval ? 'Active on terminal' : 'Requires online validation'}</dd>
             </div>
           </dl>
-          {state.rejected > 0 && (
+          {state.syncCounts.rejected > 0 && (
             <p className="operation-warning" role="status">
-              ⚠ {state.rejected} sync operation{state.rejected === 1 ? '' : 's'} need review. Ask a manager for assistance.
+              ⚠ {state.syncCounts.rejected} sync operation{state.syncCounts.rejected === 1 ? '' : 's'} {state.syncCounts.rejected === 1 ? 'needs' : 'need'} review. Ask a manager for assistance.
             </p>
           )}
+          <Link className="reprint-btn sync-center-link" to="/pos/sync">Open Sync Center →</Link>
         </section>
       </div>
     </section>
