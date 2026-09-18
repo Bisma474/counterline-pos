@@ -217,8 +217,72 @@ async function createProduct(req: import('express').Request, res: import('expres
   }
 }
 
+// ---------------------------------------------------------------------------
+// POST /catalog/tax-rates — owner/manager creates a new tax rate
+// ---------------------------------------------------------------------------
+async function createTaxRate(req: import('express').Request, res: import('express').Response) {
+  try {
+    const body = req.body as Record<string, unknown>
+    const storeId = String(body.store_id ?? '')
+    if (!UUID_RE.test(storeId)) throw new ApiError(400, 'validation_failed', 'A valid store_id UUID is required.')
+
+    await requireStoreManager(req, storeId)
+
+    const name = String(body.name ?? '').trim()
+    if (!name || name.length > 60) throw new ApiError(422, 'validation_failed', 'Tax rate name is required and must be 1–60 characters.')
+
+    const rawRate = body.rate_bps
+    if (!Number.isInteger(rawRate) || (rawRate as number) < 0 || (rawRate as number) > 10_000) {
+      throw new ApiError(422, 'validation_failed', 'rate_bps must be an integer between 0 and 10,000.')
+    }
+    const rateBps = rawRate as number
+
+    const client = await db.connect()
+    try {
+      await client.query('begin')
+
+      // Lock feed state row first, exactly like createProduct (doc 03 §3.5 serialized per-store feed)
+      const feedRow = await client.query(
+        'select last_position from public.pos_sync_feed_state where store_id=$1 for update',
+        [storeId],
+      )
+      if (!feedRow.rows[0]) throw new ApiError(503, 'server_unavailable', 'Store is not initialized. Apply catalog migration.')
+      const nextPos = (BigInt(feedRow.rows[0].last_position as string | number) + 1n).toString()
+
+      const taxRes = await client.query(
+        `insert into public.pos_tax_rates (store_id, name, rate_bps, active)
+         values ($1,$2,$3,true)
+         returning id, store_id, name, rate_bps, active`,
+        [storeId, name, rateBps],
+      )
+      const row = taxRes.rows[0] as { id: string; store_id: string; name: string; rate_bps: number; active: boolean }
+
+      await client.query(
+        'update public.pos_sync_feed_state set last_position=$1 where store_id=$2',
+        [nextPos, storeId],
+      )
+      await client.query(
+        `insert into public.pos_change_feed (store_id, position, entity_type, entity_id, action, payload)
+         values ($1,$2,'tax_rate',$3,'upsert',$4::jsonb)`,
+        [storeId, nextPos, row.id, JSON.stringify(row)],
+      )
+
+      await client.query('commit')
+      res.status(201).json({ tax_rate: row, checkpoint: nextPos })
+    } catch (reason) {
+      await client.query('rollback')
+      throw reason
+    } finally {
+      client.release()
+    }
+  } catch (reason) {
+    sendApiError(res, reason)
+  }
+}
+
 export const catalogRouter = Router()
 export const terminalCatalogRouter = Router()
 catalogRouter.get('/snapshot', (req, res) => void snapshot(req, res))
 catalogRouter.post('/products', (req, res) => void createProduct(req, res))
+catalogRouter.post('/tax-rates', (req, res) => void createTaxRate(req, res))
 terminalCatalogRouter.get('/snapshot', (req, res) => void snapshot(req, res, true))
