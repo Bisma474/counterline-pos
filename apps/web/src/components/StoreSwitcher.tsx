@@ -1,9 +1,10 @@
 /**
- * StoreSwitcher — sidebar dropdown for accounts with more than one active store membership.
- * Renders nothing for the common single-store case, per the task's own scoping ("for users with
- * more than one active store_memberships row"). Persists the choice through setActiveStoreId(),
- * which activeStoreId() then respects everywhere else in the app, and reloads so every screen's
- * local Dexie cache and in-memory state re-bootstraps cleanly for the newly selected store.
+ * StoreSwitcher — sidebar dropdown showing the account's active store(s). Always visible (even
+ * for a single-store account, so the mechanism is discoverable and consistent) — it just has one
+ * option to pick from until the account has more. Persists the choice through
+ * setActiveStoreId(), which activeStoreId() then respects everywhere else in the app, and
+ * reloads so every screen's local Dexie cache and in-memory state re-bootstraps cleanly for the
+ * newly selected store.
  */
 import { useEffect, useState, type ChangeEvent } from 'react'
 import { activeStoreId, listActiveStores, setActiveStoreId, type ActiveStoreOption } from '../lib/catalog'
@@ -29,7 +30,9 @@ export function StoreSwitcher() {
     }
   }, [])
 
-  if (stores.length < 2) return null
+  // Nothing to show only while the initial fetch hasn't resolved yet (or failed, e.g. offline) —
+  // once we have at least one store, always render, regardless of how many.
+  if (stores.length === 0) return null
 
   const handleChange = async (event: ChangeEvent<HTMLSelectElement>) => {
     const next = event.target.value
