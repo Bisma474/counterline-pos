@@ -20,9 +20,24 @@ import {
 import { currentAccess } from '../terminal-auth/cache'
 import { configuredApiUrl } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
+import { fetchDailySummary } from '../lib/server-reports'
 import './reporting.css'
 
+// Health-check the API the same way ConnectionAndSync/CashierDashboardScreen do: navigator.onLine
+// alone doesn't tell us the API is actually up, so probe /health with a short timeout.
+async function isApiReachable(): Promise<boolean> {
+  if (!navigator.onLine) return false
+  try {
+    const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 interface ReportState {
+  storeId: string
+  day: string
   config: StoreConfig
   report: LocalSalesReport
   topProducts: TopProduct[]
@@ -31,12 +46,13 @@ interface ReportState {
 }
 
 function useFinancialReport(day?: string) {
+  const [localState, setLocalState] = useState<ReportState>()
   const [state, setState] = useState<ReportState>()
   const [error, setError] = useState('')
   useEffect(() => {
     let active = true
     let subscription: { unsubscribe(): void } | undefined
-    setState(undefined)
+    setLocalState(undefined)
     setError('')
     void resolveFinancialAccess()
       .then(async access => {
@@ -65,10 +81,10 @@ function useFinancialReport(day?: string) {
           const lowStock = calculateLowStockItems(products, stock, adjustments, 5, 5)
           const recentOrders = getRecentOrders(orders, items, payments, access.storeId, 5)
 
-          return { config, report, topProducts, lowStock, recentOrders }
+          return { storeId: access.storeId, day: reportDay, config, report, topProducts, lowStock, recentOrders }
         }).subscribe({
           next: data => {
-            if (active) setState(data)
+            if (active) setLocalState(data)
           },
           error: reason => {
             if (active) setError(reason instanceof Error ? reason.message : 'Unable to calculate reporting totals.')
@@ -82,9 +98,48 @@ function useFinancialReport(day?: string) {
     return () => {
       active = false
       subscription?.unsubscribe()
-      setState(undefined)
+      setLocalState(undefined)
     }
   }, [day])
+
+  // Precedence: when the API is reachable, prefer the server's cross-device daily summary for the
+  // financial totals so a second device sees every sale for the store, not just this browser's own.
+  // pendingCount/rejectedAmountCents etc. stay sourced from the local outbox either way, since those
+  // describe this browser's own queued/rejected sync state and have no server-side equivalent (a
+  // rejected sale never reaches pos_orders at all). Falls back to the local Dexie calculation as-is
+  // whenever offline or the request fails, so offline use is unaffected.
+  useEffect(() => {
+    let active = true
+    if (!localState) {
+      setState(undefined)
+      return
+    }
+    void (async () => {
+      let report = localState.report
+      if (await isApiReachable()) {
+        try {
+          const summary = await fetchDailySummary(localState.storeId, localState.day)
+          report = {
+            ...summary,
+            pendingCount: localState.report.pendingCount,
+            pendingAmountCents: localState.report.pendingAmountCents,
+            rejectedCount: localState.report.rejectedCount,
+            rejectedAmountCents: localState.report.rejectedAmountCents,
+          }
+        } catch {
+          // Server summary unavailable — fall through to the local calculation.
+        }
+      }
+      // Only commit once resolved, so a table change elsewhere in the store (e.g. a stock
+      // adjustment) that re-triggers this effect doesn't flash the totals down to the local-only
+      // figure while the server summary re-fetches; the previously merged state stays on screen.
+      if (active) setState({ ...localState, report })
+    })()
+    return () => {
+      active = false
+    }
+  }, [localState])
+
   return { state, error }
 }
 
@@ -386,16 +441,8 @@ export function CashierDashboardScreen() {
   useEffect(() => {
     let active = true
     const checkApi = async () => {
-      if (!navigator.onLine) {
-        if (active) setApiReachable(false)
-        return
-      }
-      try {
-        const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
-        if (active) setApiReachable(response.ok)
-      } catch {
-        if (active) setApiReachable(false)
-      }
+      const reachable = await isApiReachable()
+      if (active) setApiReachable(reachable)
     }
     void checkApi()
     const timer = window.setInterval(() => void checkApi(), 15_000)
