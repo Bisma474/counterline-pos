@@ -12,24 +12,35 @@ export async function accessToken(): Promise<string> {
   return data.session.access_token
 }
 export interface ActiveStoreOption { store_id: string; store_name: string; role: string }
-type MembershipStoreRow = { store_id: string; role: string; stores: { name: string } | null }
 
-/** Every store this account currently has active membership in, oldest joined first. */
+/**
+ * Every store this account currently has active membership in, oldest joined first.
+ * Two plain queries rather than a PostgREST embedded join (`stores(name)`) — matches the proven
+ * pattern ManagerSetup.tsx already uses for the same "list my stores" need, instead of relying on
+ * embed syntax that was never actually verified against a real project.
+ */
 export async function listActiveStores(): Promise<ActiveStoreOption[]> {
   const client = requireSupabase()
   const { data: userResult, error: userError } = await client.auth.getUser()
   if (userError || !userResult.user) throw new Error('Sign in to load your stores.')
-  const { data, error } = await client
+  const { data: memberships, error: membershipError } = await client
     .from('store_memberships')
-    .select('store_id, role, stores(name)')
+    .select('store_id, role')
     .eq('user_id', userResult.user.id)
     .eq('active', true)
     .order('joined_at')
-  if (error) throw error
-  return ((data ?? []) as unknown as MembershipStoreRow[]).map(row => ({
-    store_id: row.store_id,
-    role: row.role,
-    store_name: row.stores?.name ?? '',
+  if (membershipError) throw membershipError
+  if (!memberships?.length) return []
+  const { data: stores, error: storeError } = await client
+    .from('stores')
+    .select('id, name')
+    .in('id', memberships.map(membership => membership.store_id))
+  if (storeError) throw storeError
+  const names = new Map((stores ?? []).map(store => [store.id as string, store.name as string]))
+  return memberships.map(membership => ({
+    store_id: membership.store_id as string,
+    role: membership.role as string,
+    store_name: names.get(membership.store_id as string) ?? '',
   }))
 }
 
