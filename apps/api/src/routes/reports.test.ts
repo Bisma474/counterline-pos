@@ -20,6 +20,10 @@ test('storeIdParam and dateParam reject malformed input', () => {
   assert.throws(() => storeIdParam(reqWith({})), /valid store_id/)
   assert.throws(() => dateParam(reqWith({ date: '2026-13-40' })), /valid date/)
   assert.throws(() => dateParam(reqWith({ date: 'not-a-date' })), /valid date/)
+  // 2025 is not a leap year — Date.parse alone would silently roll this into 2025-03-01.
+  assert.throws(() => dateParam(reqWith({ date: '2025-02-29' })), /valid date/)
+  assert.throws(() => dateParam(reqWith({ date: '2026-04-31' })), /valid date/)
+  assert.doesNotThrow(() => dateParam(reqWith({ date: '2024-02-29' })))
   assert.doesNotThrow(() => dateParam(reqWith({ date: '2026-09-18' })))
 })
 
@@ -115,32 +119,33 @@ test('loadOrdersPage paginates by cursor and joins the cashier name', async () =
       return { rows: result.rows, rowCount: Math.max(result.affectedRows ?? 0, result.rows.length) }
     }
 
+    const times = ['2026-09-18T08:00:00.000Z', '2026-09-18T10:00:00.000Z', '2026-09-18T12:00:00.000Z']
     const orderIds: string[] = []
-    let attributedOrderId = ''
     for (let i = 0; i < 3; i++) {
       const id = randomUUID()
       orderIds.push(id)
-      if (i === 0) attributedOrderId = id
       await database.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
         subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,employee_id)
-        values ($1,$2,$3,'USD','One','UTC',500,0,0,500,1,'2026-09-18T10:00:00.000Z',$4)`,
-        [id, store, `OP-00000${i + 1}`, i === 0 ? employee : null])
+        values ($1,$2,$3,'USD','One','UTC',500,0,0,500,1,$4,$5)`,
+        [id, store, `OP-00000${i + 1}`, times[i], i === 2 ? employee : null])
       await database.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,client_generated_at)
-        values ($1,$2,$3,'card',500,500,0,'2026-09-18T10:00:00.000Z')`, [randomUUID(), store, id])
+        values ($1,$2,$3,'card',500,500,0,$4)`, [randomUUID(), store, id, times[i]])
     }
-    orderIds.sort()
+    // Newest first, matching RecentOrderSummary's own sort order: T3 (index 2), then T2, then T1.
+    const expectedOrder = [orderIds[2], orderIds[1], orderIds[0]]
 
     const first = await loadOrdersPage(store, '2026-09-18', null, 2)
     assert.equal(first.orders.length, 2)
     assert.ok(first.next_cursor)
-    assert.equal(first.orders.map(o => o.id).join(','), orderIds.slice(0, 2).join(','))
+    assert.equal(first.orders.map(o => o.id).join(','), expectedOrder.slice(0, 2).join(','))
 
-    const second = await loadOrdersPage(store, '2026-09-18', JSON.parse(Buffer.from(first.next_cursor!, 'base64url').toString()).id, 2)
+    const cursor = JSON.parse(Buffer.from(first.next_cursor!, 'base64url').toString()) as { time: string; id: string }
+    const second = await loadOrdersPage(store, '2026-09-18', cursor, 2)
     assert.equal(second.orders.length, 1)
     assert.equal(second.next_cursor, null)
-    assert.equal(second.orders[0].id, orderIds[2])
+    assert.equal(second.orders[0].id, expectedOrder[2])
 
-    const attributed = [...first.orders, ...second.orders].find(o => o.id === attributedOrderId)!
+    const attributed = first.orders.find(o => o.id === orderIds[2])!
     assert.equal(attributed.employeeId, employee)
     assert.equal(attributed.cashierName, 'Casey')
     assert.equal(attributed.paymentMethod, 'card')

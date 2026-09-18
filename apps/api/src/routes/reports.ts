@@ -21,7 +21,14 @@ export function storeIdParam(req: Request): string {
 
 export function dateParam(req: Request): string {
   const date = String(req.query.date ?? '')
-  if (!dateRe.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00.000Z`))) throw new ApiError(400, 'validation_failed', 'A valid date (YYYY-MM-DD) is required.')
+  if (!dateRe.test(date)) throw new ApiError(400, 'validation_failed', 'A valid date (YYYY-MM-DD) is required.')
+  // Date.parse rolls a calendar-invalid date (e.g. 2025-02-29, a non-leap year) into the next day
+  // instead of rejecting it, so round-trip through Date.UTC to catch dates that don't exist.
+  const [year, month, day] = date.split('-').map(Number)
+  const asUtc = new Date(Date.UTC(year, month - 1, day))
+  if (asUtc.getUTCFullYear() !== year || asUtc.getUTCMonth() !== month - 1 || asUtc.getUTCDate() !== day) {
+    throw new ApiError(400, 'validation_failed', 'A valid date (YYYY-MM-DD) is required.')
+  }
   return date
 }
 
@@ -54,21 +61,23 @@ export interface DailySummary {
 // rejected sale never reaches pos_orders at all, since the API only accepts fully-valid operations.
 export async function loadDailySummary(storeId: string, date: string): Promise<DailySummary> {
   const { startUtc, endUtc } = await dayBounds(storeId, date)
-  const totals = await db.query<{ gross: string; discount: string; tax: string; total: string; count: string }>(`
-    select coalesce(sum(subtotal_cents),0)::text as gross, coalesce(sum(discount_cents),0)::text as discount,
-      coalesce(sum(tax_cents),0)::text as tax, coalesce(sum(total_cents),0)::text as total, count(*)::text as count
-    from public.pos_orders where store_id=$1 and client_generated_at >= $2 and client_generated_at < $3`,
-    [storeId, startUtc, endUtc])
-  const items = await db.query<{ qty: string }>(`
-    select coalesce(sum(oi.quantity),0)::text as qty from public.pos_order_items oi
-    join public.pos_orders o on o.store_id=oi.store_id and o.id=oi.order_id
-    where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3`,
-    [storeId, startUtc, endUtc])
-  const payments = await db.query<{ method: string; amount: string }>(`
-    select p.method, coalesce(sum(p.amount_cents),0)::text as amount from public.pos_payments p
-    join public.pos_orders o on o.store_id=p.store_id and o.id=p.order_id
-    where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3
-    group by p.method`, [storeId, startUtc, endUtc])
+  const [totals, items, payments] = await Promise.all([
+    db.query<{ gross: string; discount: string; tax: string; total: string; count: string }>(`
+      select coalesce(sum(subtotal_cents),0)::text as gross, coalesce(sum(discount_cents),0)::text as discount,
+        coalesce(sum(tax_cents),0)::text as tax, coalesce(sum(total_cents),0)::text as total, count(*)::text as count
+      from public.pos_orders where store_id=$1 and client_generated_at >= $2 and client_generated_at < $3`,
+      [storeId, startUtc, endUtc]),
+    db.query<{ qty: string }>(`
+      select coalesce(sum(oi.quantity),0)::text as qty from public.pos_order_items oi
+      join public.pos_orders o on o.store_id=oi.store_id and o.id=oi.order_id
+      where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3`,
+      [storeId, startUtc, endUtc]),
+    db.query<{ method: string; amount: string }>(`
+      select p.method, coalesce(sum(p.amount_cents),0)::text as amount from public.pos_payments p
+      join public.pos_orders o on o.store_id=p.store_id and o.id=p.order_id
+      where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3
+      group by p.method`, [storeId, startUtc, endUtc]),
+  ])
   const row = totals.rows[0]
   const grossSalesCents = Number(row.gross), discountCents = Number(row.discount), taxCents = Number(row.tax)
   const recordedTotalCents = Number(row.total), completedOrderCount = Number(row.count)
@@ -105,15 +114,19 @@ export interface ReportOrderSummary {
 }
 export interface OrdersPage { orders: ReportOrderSummary[]; next_cursor: string | null }
 
-function cursorParam(req: Request): { id: string } | null {
+interface OrdersCursor { time: string; id: string }
+function cursorParam(req: Request): OrdersCursor | null {
   const value = req.query.cursor
   if (value === undefined) return null
   if (typeof value !== 'string' || value.length > 160) throw new ApiError(400, 'validation_failed', 'Invalid cursor.')
   let parsed: unknown
   try { parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) } catch { throw new ApiError(400, 'validation_failed', 'Invalid cursor.') }
-  const id = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).id : undefined
-  if (typeof id !== 'string' || !uuid.test(id)) throw new ApiError(400, 'validation_failed', 'Invalid cursor.')
-  return { id }
+  const row = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+  const { time, id } = row
+  if (typeof time !== 'string' || Number.isNaN(Date.parse(time)) || typeof id !== 'string' || !uuid.test(id)) {
+    throw new ApiError(400, 'validation_failed', 'Invalid cursor.')
+  }
+  return { time, id }
 }
 function limitParam(req: Request): number {
   const rawLimit = req.query.limit === undefined ? 50 : Number(req.query.limit)
@@ -121,10 +134,11 @@ function limitParam(req: Request): number {
   return rawLimit
 }
 
-// Cross-device drill-down for a store's calendar day, mirroring the exact cursor pattern in
-// customers.ts's cursor()/search(): base64url-encoded {id} cursor, id > $cursor keyset pagination,
-// limit+1 fetch to compute next_cursor cheaply.
-export async function loadOrdersPage(storeId: string, date: string, cursorId: string | null, limit: number): Promise<OrdersPage> {
+// Cross-device drill-down for a store's calendar day, newest first — matching RecentOrderSummary's
+// own sort order in reporting.ts. Keyset-paginated on (client_generated_at, id) so pages stay stable
+// even when two sales share a timestamp; the cursor pattern otherwise mirrors customers.ts's
+// cursor()/search() (opaque base64url cursor, limit+1 fetch to compute next_cursor cheaply).
+export async function loadOrdersPage(storeId: string, date: string, cursor: OrdersCursor | null, limit: number): Promise<OrdersPage> {
   const { startUtc, endUtc } = await dayBounds(storeId, date)
   const result = await db.query<{
     id: string; receipt_number: string; client_generated_at: string; total_cents: string
@@ -139,9 +153,9 @@ export async function loadOrdersPage(storeId: string, date: string, cursorId: st
       on oi.order_id = o.id
     left join public.terminal_employees e on e.store_id = o.store_id and e.id = o.employee_id
     where o.store_id = $1 and o.client_generated_at >= $2 and o.client_generated_at < $3
-      and ($4::uuid is null or o.id > $4::uuid)
-    order by o.id limit $5`,
-    [storeId, startUtc, endUtc, cursorId, limit + 1])
+      and ($4::timestamptz is null or (o.client_generated_at, o.id) < ($4::timestamptz, $5::uuid))
+    order by o.client_generated_at desc, o.id desc limit $6`,
+    [storeId, startUtc, endUtc, cursor?.time ?? null, cursor?.id ?? null, limit + 1])
   const page = result.rows.slice(0, limit)
   const last = page.at(-1)
   return {
@@ -151,7 +165,9 @@ export async function loadOrdersPage(storeId: string, date: string, cursorId: st
       itemCount: Number(row.item_count), syncStatus: 'synced',
       employeeId: row.employee_id, cashierName: row.cashier_name,
     })),
-    next_cursor: result.rows.length > limit && last ? Buffer.from(JSON.stringify({ id: last.id })).toString('base64url') : null,
+    next_cursor: result.rows.length > limit && last
+      ? Buffer.from(JSON.stringify({ time: last.client_generated_at, id: last.id })).toString('base64url')
+      : null,
   }
 }
 
@@ -162,7 +178,7 @@ async function ordersHandler(req: Request, res: Response) {
     const date = dateParam(req)
     const limit = limitParam(req)
     const cursor = cursorParam(req)
-    res.json(await loadOrdersPage(storeId, date, cursor?.id ?? null, limit))
+    res.json(await loadOrdersPage(storeId, date, cursor, limit))
   } catch (reason) { sendApiError(res, reason) }
 }
 reportsRouter.get('/orders', (req, res) => void ordersHandler(req, res))
