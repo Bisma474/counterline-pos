@@ -91,3 +91,78 @@ async function dailySummaryHandler(req: Request, res: Response) {
   } catch (reason) { sendApiError(res, reason) }
 }
 reportsRouter.get('/daily-summary', (req, res) => void dailySummaryHandler(req, res))
+
+export interface ReportOrderSummary {
+  id: string
+  receiptNumber: string
+  time: string
+  totalCents: number
+  paymentMethod: 'cash' | 'card' | 'unknown'
+  itemCount: number
+  syncStatus: 'synced'
+  employeeId: string | null
+  cashierName: string | null
+}
+export interface OrdersPage { orders: ReportOrderSummary[]; next_cursor: string | null }
+
+function cursorParam(req: Request): { id: string } | null {
+  const value = req.query.cursor
+  if (value === undefined) return null
+  if (typeof value !== 'string' || value.length > 160) throw new ApiError(400, 'validation_failed', 'Invalid cursor.')
+  let parsed: unknown
+  try { parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) } catch { throw new ApiError(400, 'validation_failed', 'Invalid cursor.') }
+  const id = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).id : undefined
+  if (typeof id !== 'string' || !uuid.test(id)) throw new ApiError(400, 'validation_failed', 'Invalid cursor.')
+  return { id }
+}
+function limitParam(req: Request): number {
+  const rawLimit = req.query.limit === undefined ? 50 : Number(req.query.limit)
+  if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 200) throw new ApiError(400, 'validation_failed', 'Limit must be 1 to 200.')
+  return rawLimit
+}
+
+// Cross-device drill-down for a store's calendar day, mirroring the exact cursor pattern in
+// customers.ts's cursor()/search(): base64url-encoded {id} cursor, id > $cursor keyset pagination,
+// limit+1 fetch to compute next_cursor cheaply.
+export async function loadOrdersPage(storeId: string, date: string, cursorId: string | null, limit: number): Promise<OrdersPage> {
+  const { startUtc, endUtc } = await dayBounds(storeId, date)
+  const result = await db.query<{
+    id: string; receipt_number: string; client_generated_at: string; total_cents: string
+    payment_method: string | null; item_count: string; employee_id: string | null; cashier_name: string | null
+  }>(`
+    select o.id, o.receipt_number, o.client_generated_at, o.total_cents::text as total_cents,
+      p.method as payment_method, coalesce(oi.qty, 0)::text as item_count,
+      o.employee_id, e.name as cashier_name
+    from public.pos_orders o
+    left join public.pos_payments p on p.store_id = o.store_id and p.order_id = o.id
+    left join (select order_id, sum(quantity) as qty from public.pos_order_items where store_id=$1 group by order_id) oi
+      on oi.order_id = o.id
+    left join public.terminal_employees e on e.store_id = o.store_id and e.id = o.employee_id
+    where o.store_id = $1 and o.client_generated_at >= $2 and o.client_generated_at < $3
+      and ($4::uuid is null or o.id > $4::uuid)
+    order by o.id limit $5`,
+    [storeId, startUtc, endUtc, cursorId, limit + 1])
+  const page = result.rows.slice(0, limit)
+  const last = page.at(-1)
+  return {
+    orders: page.map(row => ({
+      id: row.id, receiptNumber: row.receipt_number, time: row.client_generated_at,
+      totalCents: Number(row.total_cents), paymentMethod: (row.payment_method as 'cash' | 'card' | null) ?? 'unknown',
+      itemCount: Number(row.item_count), syncStatus: 'synced',
+      employeeId: row.employee_id, cashierName: row.cashier_name,
+    })),
+    next_cursor: result.rows.length > limit && last ? Buffer.from(JSON.stringify({ id: last.id })).toString('base64url') : null,
+  }
+}
+
+async function ordersHandler(req: Request, res: Response) {
+  try {
+    const storeId = storeIdParam(req)
+    await requireReportAccess(req, storeId)
+    const date = dateParam(req)
+    const limit = limitParam(req)
+    const cursor = cursorParam(req)
+    res.json(await loadOrdersPage(storeId, date, cursor?.id ?? null, limit))
+  } catch (reason) { sendApiError(res, reason) }
+}
+reportsRouter.get('/orders', (req, res) => void ordersHandler(req, res))
