@@ -18,3 +18,5 @@
   .sale-print-root h2{font:700 15pt/1.2 Arial,sans-serif}.sale-print-root .receipt-total{font-size:12pt}
   .sale-print-root .receipt-line{break-inside:avoid;page-break-inside:avoid}.sale-print-root header{break-inside:avoid}.sale-print-root .receipt-totals{break-inside:avoid}
 }
+.refund-action { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+@media print { .refund-action { display: none; } }

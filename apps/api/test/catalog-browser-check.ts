@@ -22,10 +22,20 @@ const database = new PGlite()
 await database.exec(`create role anon; create role authenticated; create role service_role bypassrls;
   create schema auth; create table auth.users(id uuid primary key,raw_user_meta_data jsonb);
   create function auth.uid() returns uuid language sql as 'select null::uuid';
-  create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
+  create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';
+  -- Minimal storage schema stub: PGlite has no Supabase Storage extension, but the product-images
+  -- migration expects storage.buckets/storage.objects/storage.foldername() to exist.
+  create schema storage;
+  create table storage.buckets(id text primary key, name text, public boolean);
+  create table storage.objects(id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid);
+  create function storage.foldername(name text) returns text[] language sql as
+    $$ select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1] $$;`)
 for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_checkout_sync.sql',
   '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql',
-  '202609160001_customers_and_sale_attachment.sql', '202609170001_change_feed_product_entity.sql']) {
+  '202609160001_customers_and_sale_attachment.sql', '202609170001_change_feed_product_entity.sql',
+  '202609170002_cart_discounts.sql', '202609180001_terminal_name_uniqueness.sql',
+  '202609180002_store_business_details.sql', '202609180003_tax_rate_change_feed.sql',
+  '202609180004_product_images.sql']) {
   await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
 }
 const owner = randomUUID(), store = randomUUID()

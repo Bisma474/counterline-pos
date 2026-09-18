@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { Router } from 'express'
 import { db } from '../db.js'
-import { ApiError, requireStoreMember, sendApiError } from './auth.js'
+import { ApiError, requireStoreMember, requireStoreManager, sendApiError } from './auth.js'
 import { boundedInteger, calculateDiscountedLine, discountNeedsManagerApproval, MAX_CENTS, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money.js'
 import { requireDeviceTerminal } from '../terminal-auth/routes.js'
 
@@ -201,5 +201,101 @@ async function push(req: import('express').Request, res: import('express').Respo
     finally { client.release() }
   } catch (reason) { sendApiError(res, reason) }
 }
+// ---------------------------------------------------------------------------
+// POST /orders/:id/refund — owner/manager whole-order refund.
+// Money-correctness code: held to the same review bar as checkout itself (validateOperation
+// above). No partial line items, no re-charging — the entire order's total is reversed and its
+// stock restored. The original pos_orders/pos_order_items rows are never touched; the refund is
+// its own append-only record, per docs/04_er_diagrams.md:98's suggested shape (reference the sale
+// through order_id, the return through a separate refund_id — never the other way around).
+// ---------------------------------------------------------------------------
+async function refund(req: import('express').Request, res: import('express').Response) {
+  try {
+    const orderId = id(req.params.id, 'Order ID')
+    const body = req.body as Record<string, unknown>
+    const storeId = id(body.store_id, 'Store ID')
+    const reason = body.reason === null || body.reason === undefined || body.reason === ''
+      ? null : text(body.reason, 'Refund reason', 240)
+
+    const userId = await requireStoreManager(req, storeId)
+
+    const client = await db.connect()
+    try {
+      await client.query('begin')
+      await client.query('insert into public.pos_sync_feed_state(store_id) values ($1) on conflict do nothing', [storeId])
+      await client.query('select last_position from public.pos_sync_feed_state where store_id=$1 for update', [storeId])
+
+      const orderRes = await client.query<{ id: string; total_cents: string }>(
+        'select id, total_cents::text as total_cents from public.pos_orders where store_id=$1 and id=$2',
+        [storeId, orderId],
+      )
+      if (!orderRes.rows[0]) throw new ApiError(404, 'not_found', 'Order not found.')
+      const order = orderRes.rows[0]
+
+      const existing = await client.query('select 1 from public.pos_refunds where store_id=$1 and order_id=$2', [storeId, orderId])
+      if (existing.rowCount) throw new ApiError(409, 'refund_conflict', 'This order has already been refunded.')
+
+      const itemsRes = await client.query<{ id: string; product_id: string; quantity: number; total_cents: string }>(
+        'select id, product_id, quantity, total_cents::text as total_cents from public.pos_order_items where store_id=$1 and order_id=$2',
+        [storeId, orderId],
+      )
+      if (!itemsRes.rowCount) throw new ApiError(422, 'validation_failed', 'Order has no line items to refund.')
+      const items = itemsRes.rows
+
+      const refundRes = await client.query<{ id: string; store_id: string; order_id: string; amount_cents: string; reason: string | null; refunded_by: string; created_at: string }>(
+        `insert into public.pos_refunds (store_id, order_id, amount_cents, reason, refunded_by)
+         values ($1,$2,$3,$4,$5)
+         returning id, store_id, order_id, amount_cents::text as amount_cents, reason, refunded_by, created_at`,
+        [storeId, orderId, order.total_cents, reason, userId],
+      )
+      const refundRow = refundRes.rows[0]
+
+      for (const item of items) {
+        await client.query(
+          `insert into public.pos_refund_items (store_id, refund_id, order_item_id, product_id, quantity, amount_cents)
+           values ($1,$2,$3,$4,$5,$6)`,
+          [storeId, refundRow.id, item.id, item.product_id, item.quantity, item.total_cents],
+        )
+      }
+
+      // Reverse stock once per distinct product (checkout already merges same-product cart lines,
+      // but this groups defensively rather than assuming that holds for every historical order).
+      const byProduct = new Map<string, number>()
+      for (const item of items) byProduct.set(item.product_id, (byProduct.get(item.product_id) ?? 0) + item.quantity)
+
+      let position = BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position)
+      for (const [productId, quantity] of byProduct) {
+        await client.query(
+          `insert into public.pos_inventory_movements (store_id, product_id, order_id, operation_id, delta, reason)
+           values ($1,$2,$3,gen_random_uuid(),$4,'refund')`,
+          [storeId, productId, orderId, quantity],
+        )
+        const stock = await client.query(`update public.pos_stock set current_stock=current_stock+$3, updated_at=now()
+          where store_id=$1 and product_id=$2 returning current_stock`, [storeId, productId, quantity])
+        if (!stock.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Stock projection is missing for a refunded product.')
+        position += 1n
+        await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
+          values ($1,$2,'stock',$3,$4)`, [storeId, position.toString(), productId, { product_id: productId, current_stock: stock.rows[0].current_stock }])
+      }
+
+      position += 1n
+      await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
+        values ($1,$2,'refund',$3,$4)`, [storeId, position.toString(), refundRow.id, { order_id: orderId, refund_id: refundRow.id, amount_cents: order.total_cents }])
+      await client.query('update public.pos_sync_feed_state set last_position=$2 where store_id=$1', [storeId, position.toString()])
+
+      await client.query('commit')
+      res.status(201).json({ refund: refundRow })
+    } catch (reason2) {
+      await client.query('rollback')
+      throw reason2
+    } finally {
+      client.release()
+    }
+  } catch (reason) {
+    sendApiError(res, reason)
+  }
+}
+
 ordersRouter.post('/push', (req, res) => void push(req, res))
 terminalOrdersRouter.post('/push', (req, res) => void push(req, res, true))
+ordersRouter.post('/:id/refund', (req, res) => void refund(req, res))
