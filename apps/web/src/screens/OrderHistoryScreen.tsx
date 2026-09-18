@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Dexie, { liveQuery } from 'dexie'
 import { formatCents } from '../../../../packages/domain/src/money'
@@ -20,8 +20,9 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [remoteOrders, setRemoteOrders] = useState<ServerOrderSummary[]>()
+  const [remoteTruncated, setRemoteTruncated] = useState(false)
   const [remoteError, setRemoteError] = useState('')
-  const [currency, setCurrency] = useState('USD')
+  const [currency, setCurrency] = useState<string>()
   useEffect(() => {
     setOrders(undefined); setError('')
     if (!scope.storeId) return
@@ -45,22 +46,33 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     const timer = window.setInterval(handler, 15_000)
     return () => { window.removeEventListener('online', handler); window.clearInterval(timer) }
   }, [scope.storeId, terminal])
+  // A local order's day is judged by its own timezone_snapshot (the timezone recorded at sale
+  // time), same as the search filter below — this can occasionally disagree with the server's
+  // day boundary (computed from the store's *current* timezone setting) right at midnight or
+  // after a store timezone change, which could show/hide a boundary order from either list.
+  const hasLocalOrderForDate = useMemo(() => Boolean(date && orders?.some(order => saleDay(order) === date)), [date, orders])
+  const showRemoteHistory = !terminal && Boolean(date) && orders !== undefined && !hasLocalOrderForDate
   // Backfill from the cross-device GET /reports/orders endpoint when this browser's local Dexie
   // history has nothing for the chosen date (new browser, lost local storage) — owner/manager view
   // only, since /reports/orders requires that Supabase-authenticated role and the cashier terminal
   // view is intentionally register-local. Only a summary is fetched (no line items/payment), so this
   // section is a read-only supplement, not a replacement for the local list.
   useEffect(() => {
-    setRemoteOrders(undefined); setRemoteError('')
-    if (terminal || !scope.storeId || !date || orders === undefined) return
-    if (orders.some(order => saleDay(order) === date)) return
+    setRemoteOrders(undefined); setRemoteTruncated(false); setRemoteError('')
+    if (!showRemoteHistory) return
+    if (!navigator.onLine) { setRemoteError('You are offline. Reconnect to check other devices for this date.'); return }
     let active = true
-    void fetchOrdersPage(scope.storeId, date)
-      .then(page => { if (active) setRemoteOrders(page.orders) })
+    void fetchOrdersPage(scope.storeId, date, null, 200)
+      .then(page => {
+        if (!active) return
+        setRemoteOrders(page.orders)
+        setRemoteTruncated(page.next_cursor !== null)
+      })
       .catch(reason => { if (active) setRemoteError(reason instanceof Error ? reason.message : 'Unable to load orders from other devices.') })
     return () => { active = false }
-  }, [terminal, scope.storeId, date, orders])
+  }, [showRemoteHistory, scope.storeId, date])
   useEffect(() => {
+    setCurrency(undefined)
     if (!scope.storeId) return
     let active = true
     void posDb.store_config.get(scope.storeId).then(config => { if (active && config) setCurrency(config.currency) })
@@ -112,15 +124,19 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
         </article>
       )
     })}</div>
-    {!terminal && date && orders !== undefined && !orders.some(order => saleDay(order) === date) && (
+    {showRemoteHistory && (
       <div className="remote-history">
         <h2>Restored from other devices</h2>
         {remoteOrders === undefined && !remoteError && <p role="status">Checking other devices for this date…</p>}
         {remoteError && <p className="history-reason">{remoteError}</p>}
+        {Boolean(remoteOrders?.length) && !currency && (
+          <p className="history-reason">This browser hasn't confirmed the store's currency yet. Connect once with this browser signed in, then reopen this date to see amounts.</p>
+        )}
         {remoteOrders?.length === 0 && <p>No sales recorded on other devices for this date either.</p>}
-        {Boolean(remoteOrders?.length) && (
+        {Boolean(remoteOrders?.length) && currency && (
           <>
-            <p className="screen-note">This browser has no saved copy of these sales, so only a summary is shown — receipt detail isn't available here.</p>
+            <p className="screen-note">This browser has no saved copy of these sales, so only a summary is shown — receipt detail isn't available here.
+              {remoteTruncated && ' Showing the first 200 sales for this date; more exist.'}</p>
             <div className="history-list">{remoteOrders!.map(order => (
               <article key={order.id}>
                 <div><strong>{order.receiptNumber}</strong><small>{new Date(order.time).toLocaleString()}{order.cashierName ? ` | ${order.cashierName}` : ''}</small></div>
