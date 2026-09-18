@@ -15,7 +15,7 @@ function validOperation() {
   return { operation_id: orderId,
     order: { id: orderId, store_id: storeId, receipt_number: 'LOCAL-TEST-000001', catalog_version: 1,
       client_generated_at: '2026-09-15T09:00:00.000Z', subtotal_cents: line.subtotalCents, discount_cents: 0,
-      tax_cents: line.taxCents, total_cents: line.totalCents, manager_id: null, manager_approved_at: null },
+      tax_cents: line.taxCents, total_cents: line.totalCents, employee_id: null, manager_id: null, manager_approved_at: null },
     items: [{ id: 'e5ae5b38-d2d6-453f-bb99-c552b2c69ebf', product_id: productId,
       snapshot_name: 'Test item', snapshot_sku: 'TEST-001', snapshot_price_cents: 199,
       snapshot_tax_bps: 500, catalog_version: 1, quantity: 2, discount_kind: null, discount_value: null,
@@ -43,6 +43,15 @@ test('rejects changed line totals and cash tender mismatch', () => {
   const tender = validOperation()
   tender.payment.change_cents = 0
   assert.throws(() => validateOperation(tender), /Payment does not balance/)
+})
+test('threads a valid employee_id through and rejects a malformed one', () => {
+  const withEmployee = validOperation()
+  withEmployee.order.employee_id = managerId
+  const result = validateOperation(withEmployee)
+  assert.equal(result.order.employee_id, managerId)
+  const malformed = validOperation()
+  malformed.order.employee_id = 'not-a-uuid'
+  assert.throws(() => validateOperation(malformed), /Employee ID must be a UUID/)
 })
 test('rejects cross-operation identity and fractional money', () => {
   const changed = validOperation()
