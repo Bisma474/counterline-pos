@@ -9,6 +9,7 @@ import { PGlite } from '@electric-sql/pglite'
 // connection, and the PGlite-backed tests below monkey-patch db.query/db.connect before use.
 process.env.DATABASE_URL ??= 'postgresql://localhost:5432/validation_only'
 const { storeIdParam, dateParam, loadDailySummary, loadOrdersPage, loadOversold } = await import('./reports.js')
+const { calendarDayBoundsUtc } = await import('../lib/timezone.js')
 const { db } = await import('../db.js')
 
 function reqWith(query: Record<string, unknown>) {
@@ -25,6 +26,20 @@ test('storeIdParam and dateParam reject malformed input', () => {
   assert.throws(() => dateParam(reqWith({ date: '2026-04-31' })), /valid date/)
   assert.doesNotThrow(() => dateParam(reqWith({ date: '2024-02-29' })))
   assert.doesNotThrow(() => dateParam(reqWith({ date: '2026-09-18' })))
+})
+
+test('calendarDayBoundsUtc stays correct across a DST transition day', () => {
+  // 2026-03-08 is a US spring-forward date (America/New_York jumps 02:00 -> 03:00 local).
+  const springForward = calendarDayBoundsUtc('2026-03-08', 'America/New_York')
+  assert.equal(springForward.startUtc, '2026-03-08T05:00:00.000Z')
+  assert.equal(springForward.endUtc, '2026-03-09T04:00:00.000Z') // day is 23h long in UTC terms
+  // 2026-11-01 is a US fall-back date (jumps 02:00 -> 01:00 local, repeating an hour).
+  const fallBack = calendarDayBoundsUtc('2026-11-01', 'America/New_York')
+  assert.equal(fallBack.startUtc, '2026-11-01T04:00:00.000Z')
+  assert.equal(fallBack.endUtc, '2026-11-02T05:00:00.000Z') // day is 25h long in UTC terms
+  // A fractional (45-minute) DST shift, to exercise a less common offset delta.
+  const chatham = calendarDayBoundsUtc('2026-04-05', 'Pacific/Chatham')
+  assert.equal(chatham.startUtc, '2026-04-04T10:15:00.000Z')
 })
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))

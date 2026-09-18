@@ -12,10 +12,17 @@ function offsetMillis(instantMs: number, timezone: string): number {
 }
 
 // The instant whose wall-clock reading in `timezone` is local midnight on `date` (YYYY-MM-DD).
+// Converges to a fixed point rather than assuming a fixed number of passes suffices, since a DST
+// transition can shift the offset used to refine the guess; the cap is a safety bound, not a
+// expected iteration count — every real IANA zone converges within 2 passes in practice.
 function localMidnightUtc(date: string, timezone: string): number {
   const naiveUtc = Date.parse(`${date}T00:00:00.000Z`)
   let guess = naiveUtc
-  for (let i = 0; i < 2; i++) guess = naiveUtc - offsetMillis(guess, timezone)
+  for (let i = 0; i < 5; i++) {
+    const next = naiveUtc - offsetMillis(guess, timezone)
+    if (next === guess) break
+    guess = next
+  }
   return guess
 }
 
