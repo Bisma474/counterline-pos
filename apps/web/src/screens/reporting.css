@@ -710,6 +710,17 @@
   font: inherit;
 }
 
+.reports-heading-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.export-csv-btn {
+  cursor: pointer;
+  font: inherit;
+}
+
 /* Responsive Breakpoints */
 @media (max-width: 960px) {
   .report-card-grid {
@@ -740,6 +751,14 @@
   }
   .terminal-status-list {
     grid-template-columns: 1fr;
+  }
+  .reports-heading-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .export-csv-btn {
+    justify-content: center;
   }
 }
 
