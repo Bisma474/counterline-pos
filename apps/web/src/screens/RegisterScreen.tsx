@@ -243,7 +243,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
         <span>{formatCents(product.unit_price_cents, currency)}</span><small>{stock[product.id] ?? 0} in stock · {product.sku}</small>
       </button>)}</div>
     </div>
-    <aside className="sale-cart"><div className="cart-title"><h2>Current Sale</h2><button className="text-action" type="button" onClick={clear} disabled={!cart.length}>Clear cart</button></div>
+    <aside className="sale-cart"><div className="cart-title"><h2>Current Sale</h2><button className="text-action" type="button" onClick={() => { if (window.confirm('Void this sale and clear the cart? This cannot be undone.')) clear() }} disabled={!cart.length}>Clear cart</button></div>
       <div className="crm-cart-customer">{selectedCustomer && customerAuthorized ? <><strong>{selectedCustomer.name}</strong><small>{selectedCustomer.phone_normalized ? `+${selectedCustomer.phone_normalized}` : 'No phone'} · {selectedCustomer.sync_status === 'synced' ? 'Saved' : 'Pending sync'}</small><div className="crm-cart-customer-actions"><button type="button" className="text-action" onClick={() => setCustomerOpen(true)}>Change customer</button><button type="button" className="text-action" onClick={() => selectCustomer(null)}>Remove</button></div></> : <><button type="button" className="text-action" disabled={!storeId || !customerAuthorized} onClick={() => setCustomerOpen(true)}>Add customer</button>{storeId && !customerAuthorized && <small>Customer access requires validated management membership.</small>}</>}</div>
       {customerSyncWarning && <p className="crm-sync-note" role="status">{customerSyncWarning}</p>}
       {!cart.length && <p className="empty-cart">Add a product to start a sale.</p>}

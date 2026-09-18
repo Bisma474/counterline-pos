@@ -7,7 +7,7 @@ import '../receipts/receipts.css'
 const navigation = [
   { label: 'Dashboard', to: '/pos/dashboard', icon: '⌂' },
   { label: 'Sell', to: '/pos/register', icon: '⌁' },
-  { label: 'Products', icon: '○' },
+  { label: 'Products', to: '/pos/products', icon: '○' },
   { label: 'Orders', to: '/pos/orders', icon: '○' },
   { label: 'Customers', to: '/pos/customers', icon: '♧' },
   { label: 'Settings', to: '/pos/settings', icon: '○' },
