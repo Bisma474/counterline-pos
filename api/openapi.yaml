@@ -167,6 +167,26 @@ paths:
       responses:
         '204': { description: Terminal revoked }
         default: { $ref: '#/components/responses/Error' }
+  /terminal-auth/devices/{id}/reactivate:
+    post:
+      operationId: reactivateTerminal
+      summary: Restore a revoked device's active status
+      description: Fails with 404 if the device is not found or is already active. Fails with 409 if another active terminal in the store already uses this device's name. The browser previously using this device must sign in again; its old sessions stay revoked.
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id]
+              properties:
+                store_id: { type: string, format: uuid }
+      responses:
+        '204': { description: Terminal reactivated }
+        default: { $ref: '#/components/responses/Error' }
   /catalog/snapshot:
     get:
       operationId: getCatalogSnapshot
