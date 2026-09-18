@@ -21,6 +21,7 @@ import { currentAccess } from '../terminal-auth/cache'
 import { configuredApiUrl } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
 import { fetchDailySummary, fetchOrdersPage, fetchOversold, type ServerOversoldProduct } from '../lib/server-reports'
+import { buildCsv, downloadCsv } from '../lib/csv'
 import './reporting.css'
 
 // Health-check the API the same way ConnectionAndSync/CashierDashboardScreen do: navigator.onLine
@@ -227,6 +228,37 @@ function useCashierBreakdown(storeId: string | undefined, day: string | undefine
 }
 
 const Money = ({ cents, currency }: { cents: number; currency: string }) => <>{formatCents(cents, currency)}</>
+
+// Builds the same rows regardless of whether `report` came from the local Dexie calculation or the
+// server daily-summary — both are normalized to the LocalSalesReport shape by useFinancialReport,
+// so this export needs no branching on data source.
+function exportDailyReportCsv(state: ReportState) {
+  const { report, config, day } = state
+  const rows: (string | number)[][] = [
+    ['Counterline POS — daily sales report'],
+    ['Store', config.name],
+    ['Report date', day],
+    ['Timezone', config.timezone],
+    ['Currency', config.currency],
+    [],
+    ['Metric', 'Value'],
+    ['Gross sales', formatCents(report.grossSalesCents, config.currency)],
+    ['Discounts', formatCents(report.discountCents, config.currency)],
+    ['Net sales', formatCents(report.netSalesCents, config.currency)],
+    ['Tax collected', formatCents(report.taxCents, config.currency)],
+    ['Cash takings', formatCents(report.cashTakingsCents, config.currency)],
+    ['Card takings', formatCents(report.cardTakingsCents, config.currency)],
+    ['Recorded total', formatCents(report.recordedTotalCents, config.currency)],
+    ['Completed orders', report.completedOrderCount],
+    ['Average sale', formatCents(report.averageSaleCents, config.currency)],
+    ['Items sold', report.itemsSold],
+    ['Pending sync — count', report.pendingCount],
+    ['Pending sync — amount', formatCents(report.pendingAmountCents, config.currency)],
+    ['Rejected — count', report.rejectedCount],
+    ['Rejected — amount', formatCents(report.rejectedAmountCents, config.currency)],
+  ]
+  downloadCsv(`counterline-daily-report-${day}.csv`, buildCsv(rows))
+}
 
 export function OwnerDashboardScreen() {
   const { state, error } = useFinancialReport()
@@ -440,10 +472,15 @@ export function ReportsScreen() {
           <p>Calendar days use the saved store timezone and the recorded sale time.</p>
         </div>
         {state && (
-          <label className="day-picker">
-            Report date
-            <input type="date" value={day} onChange={event => setDay(event.target.value)} />
-          </label>
+          <div className="reports-heading-controls">
+            <label className="day-picker">
+              Report date
+              <input type="date" value={day} onChange={event => setDay(event.target.value)} />
+            </label>
+            <button type="button" className="report-secondary export-csv-btn" onClick={() => exportDailyReportCsv(state)}>
+              Export CSV <span aria-hidden="true">↓</span>
+            </button>
+          </div>
         )}
       </header>
       {error && <AccessMessage message={error} embedded />}
