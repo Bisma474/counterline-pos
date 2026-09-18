@@ -19,10 +19,11 @@ test('cash checkout commits the receipt, sale, payment, stock overlay and outbox
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
-  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null)
+  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, null, 'employee-1')
   assert.match(sale.receiptNumber, /^LOCAL-[0-9A-F-]{36}-000001$/)
   const order = await posDb.orders.get(sale.operationId)
   assert.equal(order?.total_cents, 418)
+  assert.equal(order?.employee_id, 'employee-1')
   assert.equal((await posDb.order_items.where('order_id').equals(sale.operationId).toArray()).length, 1)
   assert.equal((await posDb.payments.where('order_id').equals(sale.operationId).first())?.change_cents, 82)
   assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.delta, -2)
@@ -186,7 +187,7 @@ test('a discount above 20% is refused without manager evidence and accepted with
   const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 2_500 } }]
   await assert.rejects(completeLocalSale(discounted, storeId, 'cash', 500, null), /manager approval/)
   assert.equal(await posDb.orders.count(), 0)
-  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null, null, { managerId: 'manager-1', approvedAt: '2026-09-17T10:00:00.000Z' })
+  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null, null, null, { managerId: 'manager-1', approvedAt: '2026-09-17T10:00:00.000Z' })
   const order = await posDb.orders.get(sale.operationId)
   assert.equal(order?.manager_id, 'manager-1')
   assert.equal(order?.manager_approved_at, '2026-09-17T10:00:00.000Z')

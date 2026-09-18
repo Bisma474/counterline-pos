@@ -76,6 +76,7 @@ export interface LocalOrder {
   accepted_checkpoint: string | null
   failure_reason: string | null
   customer_id?: string | null
+  employee_id?: string | null         // cashier who rang up the sale, when checked out on a terminal
   manager_id?: string | null          // approving manager's employee id, when any line needed approval
   manager_approved_at?: string | null // ISO 8601, when any line needed approval
 }

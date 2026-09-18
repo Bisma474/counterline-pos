@@ -5,7 +5,7 @@ import type { CartItem } from './pos-store'
 // Evidence that a manager authorized a discount above the cashier's independent 20% authority.
 export interface ManagerApprovalEvidence { managerId: string; approvedAt: string }
 
-export async function completeLocalSale(items: CartItem[], storeId: string, method: 'cash' | 'card', tenderedCents: number, reference: string | null, customerId: string | null = null, approval: ManagerApprovalEvidence | null = null) {
+export async function completeLocalSale(items: CartItem[], storeId: string, method: 'cash' | 'card', tenderedCents: number, reference: string | null, customerId: string | null = null, employeeId: string | null = null, approval: ManagerApprovalEvidence | null = null) {
   if (!items.length) throw new Error('Add a product before checkout.')
   if (items.some(item => item.storeId !== storeId)) throw new Error('Cart contains a product from another store. Clear the cart and try again.')
   const config = await posDb.store_config.get(storeId)
@@ -36,7 +36,7 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
         catalog_version: config.catalog_version, client_generated_at: now, sync_status: 'pending',
         currency: config.currency, store_name_snapshot: config.name, timezone_snapshot: config.timezone,
         accepted_checkpoint: null, failure_reason: customer && customer.sync_status !== 'synced' ? 'Waiting for customer upload.' : null,
-        customer_id: customerId, manager_id: approval?.managerId ?? null, manager_approved_at: approval?.approvedAt ?? null }
+        customer_id: customerId, employee_id: employeeId, manager_id: approval?.managerId ?? null, manager_approved_at: approval?.approvedAt ?? null }
       const orderItems: LocalOrderItem[] = items.map((item, index) => ({ id: crypto.randomUUID(),
         order_id: operationId, product_id: item.productId, snapshot_name: item.name, snapshot_sku: item.sku,
         snapshot_price_cents: item.unitPriceCents, snapshot_tax_bps: item.taxRateBps, catalog_version: item.catalogVersion, quantity: item.quantity,
