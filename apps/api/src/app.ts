@@ -2,6 +2,7 @@ import express from 'express'
 import { catalogRouter, terminalCatalogRouter } from './routes/catalog.js'
 import { ordersRouter, terminalOrdersRouter } from './routes/orders.js'
 import { customersRouter, terminalCustomersRouter } from './routes/customers.js'
+import { reportsRouter } from './routes/reports.js'
 import { terminalAuthRouter, type TerminalAuthOptions } from './terminal-auth/routes.js'
 
 export function createApp(options: TerminalAuthOptions) {
@@ -13,6 +14,7 @@ export function createApp(options: TerminalAuthOptions) {
   app.use('/catalog', catalogRouter)
   app.use('/orders', ordersRouter)
   app.use('/customers', customersRouter)
+  app.use('/reports', reportsRouter)
   app.use('/pos/catalog', terminalCatalogRouter)
   app.use('/pos/orders', terminalOrdersRouter)
   app.use('/pos/customers', terminalCustomersRouter)
