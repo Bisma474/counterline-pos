@@ -174,6 +174,42 @@ function useOversoldProducts(storeId: string | undefined) {
   return { products, error }
 }
 
+// Shifts a YYYY-MM-DD calendar-day string by a number of whole days. Pure date-string arithmetic
+// (no timezone lookup) — good enough for a "vs yesterday" comparison per the visual-redesign scope,
+// which is explicitly meant to stay simple rather than reproduce calendarDay()'s timezone precision.
+function shiftDay(day: string, deltaDays: number): string {
+  const [year, month, date] = day.split('-').map(Number)
+  const shifted = new Date(Date.UTC(year, month - 1, date))
+  shifted.setUTCDate(shifted.getUTCDate() + deltaDays)
+  return shifted.toISOString().slice(0, 10)
+}
+
+// Simple day-over-day comparison: fetches the prior calendar day's server-side recorded total so the
+// dashboard can show a "vs yesterday" delta next to the headline KPI. Server-only (like the oversold
+// panel and cashier breakdown) — there's no meaningful offline equivalent, so the badge just stays
+// hidden when the API is unreachable rather than showing a stale or misleading number.
+function usePreviousDayTotal(storeId: string | undefined, day: string | undefined) {
+  const [previousCents, setPreviousCents] = useState<number>()
+  useEffect(() => {
+    let active = true
+    setPreviousCents(undefined)
+    if (!storeId || !day) return
+    void (async () => {
+      if (!(await isApiReachable())) return
+      try {
+        const summary = await fetchDailySummary(storeId, shiftDay(day, -1))
+        if (active) setPreviousCents(summary.recordedTotalCents)
+      } catch {
+        // No comparison available for the prior day — badge stays hidden.
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId, day])
+  return previousCents
+}
+
 export interface CashierBreakdownRow { employeeId: string | null; name: string; orderCount: number; totalCents: number }
 
 // Sales-by-cashier: pages through the same cross-device /reports/orders drill-down used for remote
@@ -231,8 +267,9 @@ const Money = ({ cents, currency }: { cents: number; currency: string }) => <>{f
 export function OwnerDashboardScreen() {
   const { state, error } = useFinancialReport()
   const { products: oversoldProducts, error: oversoldError } = useOversoldProducts(state?.storeId)
+  const previousDayTotal = usePreviousDayTotal(state?.storeId, state?.day)
   if (error) return <AccessMessage message={error} />
-  if (!state) return <section className="reporting-page" role="status">Checking reporting access and local sales…</section>
+  if (!state) return <DashboardSkeleton />
   const { report, config, topProducts, lowStock, recentOrders } = state
 
   const totalTakings = report.cashTakingsCents + report.cardTakingsCents
@@ -253,9 +290,15 @@ export function OwnerDashboardScreen() {
         </div>
       </header>
 
-      {/* KPI Stats */}
+      {/* KPI Stats — the headline metric is visually emphasized, the rest stay lighter-weight */}
       <div className="report-card-grid">
-        <ReportCard label="Today’s recorded sales" value={<Money cents={report.recordedTotalCents} currency={config.currency} />} detail="Total revenue completed locally" />
+        <ReportCard
+          label="Today’s recorded sales"
+          value={<Money cents={report.recordedTotalCents} currency={config.currency} />}
+          detail="Total revenue completed locally"
+          featured
+          delta={previousDayTotal === undefined ? undefined : <DeltaBadge current={report.recordedTotalCents} previous={previousDayTotal} />}
+        />
         <ReportCard label="Completed orders" value={report.completedOrderCount} detail="Saved in this store browser" />
         <ReportCard label="Average sale" value={<Money cents={report.averageSaleCents} currency={config.currency} />} detail="Recorded total ÷ orders" />
         <ReportCard label="Items sold" value={report.itemsSold} detail="Total units rung up today" />
@@ -270,10 +313,7 @@ export function OwnerDashboardScreen() {
           </div>
           {totalTakings > 0 ? (
             <div className="tender-distribution">
-              <div className="tender-bar" role="progressbar" aria-valuenow={cashPct} aria-valuemin={0} aria-valuemax={100}>
-                <div className="bar-cash" style={{ width: `${cashPct}%` }} title={`Cash: ${cashPct}%`} />
-                <div className="bar-card" style={{ width: `${cardPct}%` }} title={`Card: ${cardPct}%`} />
-              </div>
+              <TenderDonut cashPct={cashPct} cardPct={cardPct} />
               <div className="tender-legend">
                 <div className="legend-item">
                   <span className="dot dot-cash" />
@@ -447,7 +487,7 @@ export function ReportsScreen() {
         )}
       </header>
       {error && <AccessMessage message={error} embedded />}
-      {!error && !state && <p role="status">Checking reporting access and local sales…</p>}
+      {!error && !state && <ReportLinesSkeleton />}
       {state && (
         <>
           <div className="report-metrics">
@@ -741,13 +781,91 @@ function AccessMessage({ message, embedded = false }: { message: string; embedde
   )
 }
 
-function ReportCard({ label, value, detail }: { label: string; value: ReactNode; detail: string }) {
+function ReportCard({ label, value, detail, featured = false, delta }: { label: string; value: ReactNode; detail: string; featured?: boolean; delta?: ReactNode }) {
   return (
-    <article className="report-card">
+    <article className={featured ? 'report-card featured' : 'report-card'}>
       <small>{label}</small>
       <strong>{value}</strong>
-      <span>{detail}</span>
+      <div className="report-card-footer">
+        <span>{detail}</span>
+        {delta}
+      </div>
     </article>
+  )
+}
+
+// Simple day-over-day indicator — a small up/down badge next to the headline KPI, per the visual
+// redesign's "keep it simple" scope (no full trend chart, just a delta against yesterday).
+function DeltaBadge({ current, previous }: { current: number; previous: number }) {
+  if (current === 0 && previous === 0) return null
+  const diff = current - previous
+  const pct = previous > 0 ? Math.round((diff / previous) * 100) : diff > 0 ? 100 : 0
+  const flat = pct === 0
+  const up = diff > 0
+  return (
+    <span className={`delta-badge ${flat ? 'flat' : up ? 'up' : 'down'}`}>
+      <span aria-hidden="true">{flat ? '•' : up ? '▲' : '▼'}</span>
+      {Math.abs(pct)}% vs yesterday
+    </span>
+  )
+}
+
+// Cash vs. card split as an SVG donut instead of the old flat two-segment bar — still pure CSS/SVG,
+// no charting library, matching the visual system's palette (green for cash, coral/orange for card).
+function TenderDonut({ cashPct, cardPct }: { cashPct: number; cardPct: number }) {
+  const radius = 40
+  const circumference = 2 * Math.PI * radius
+  const cashLength = (cashPct / 100) * circumference
+  return (
+    <svg viewBox="0 0 100 100" className="tender-donut" role="img" aria-label={`Cash ${cashPct} percent, card ${cardPct} percent`}>
+      <circle cx="50" cy="50" r={radius} fill="none" stroke="#eae2d3" strokeWidth="14" />
+      {cashPct > 0 && (
+        <circle
+          cx="50" cy="50" r={radius} fill="none" stroke="#238b55" strokeWidth="14"
+          strokeDasharray={`${cashLength} ${circumference - cashLength}`}
+          transform="rotate(-90 50 50)"
+        />
+      )}
+      {cardPct > 0 && (
+        <circle
+          cx="50" cy="50" r={radius} fill="none" stroke="#e2712a" strokeWidth="14"
+          strokeDasharray={`${circumference - cashLength} ${cashLength}`}
+          strokeDashoffset={-cashLength}
+          transform="rotate(-90 50 50)"
+        />
+      )}
+      <text x="50" y="47" textAnchor="middle" className="donut-pct">{cashPct}%</text>
+      <text x="50" y="61" textAnchor="middle" className="donut-label">cash</text>
+    </svg>
+  )
+}
+
+// Skeleton loading placeholders — replace bare "Checking…" text with a shimmering outline of the
+// layout that's about to render, CSS-only (no new dependency).
+function DashboardSkeleton() {
+  return (
+    <section className="reporting-page owner-dashboard" role="status" aria-label="Loading dashboard">
+      <div className="skeleton skeleton-heading" />
+      <div className="report-card-grid">
+        {Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)}
+      </div>
+      <div className="dashboard-subgrid">
+        <div className="skeleton skeleton-panel" />
+        <div className="skeleton skeleton-panel" />
+      </div>
+      <div className="dashboard-columns">
+        <div className="skeleton skeleton-panel tall" />
+        <div className="skeleton skeleton-panel tall" />
+      </div>
+    </section>
+  )
+}
+
+function ReportLinesSkeleton() {
+  return (
+    <div className="report-metrics" role="status" aria-label="Loading report">
+      {Array.from({ length: 7 }).map((_, i) => <div key={i} className="skeleton skeleton-line-row" />)}
+    </div>
   )
 }
 

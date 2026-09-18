@@ -109,6 +109,42 @@
   color: #3b7448;
 }
 
+.report-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Visual hierarchy: the headline KPI gets an accent border and slightly larger figure so the eye
+   lands there first, instead of every card reading as identically weighted. */
+.report-card.featured {
+  background: #f3ede0;
+  border-color: #c7bda3;
+  border-left: 4px solid #238b55;
+}
+
+.report-card.featured strong {
+  font-size: clamp(26px, 3vw, 38px);
+  color: #14291f;
+}
+
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.delta-badge.up { background: #e2f5e7; color: #1d7b4b; }
+.delta-badge.down { background: #fee4e2; color: #b42318; }
+.delta-badge.flat { background: #ede6d8; color: #5f5b51; }
+
 /* Subgrid for Tender Split + Sync */
 .dashboard-subgrid {
   display: grid;
@@ -157,35 +193,42 @@
   text-decoration: underline;
 }
 
-/* Tender Progress Bar */
+/* Tender Donut Chart */
 .tender-distribution {
-  display: grid;
-  gap: 14px;
-}
-
-.tender-bar {
   display: flex;
-  height: 12px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: #eae2d3;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
 }
 
-.bar-cash {
-  background: #238b55;
-  transition: width 0.3s ease;
+.tender-donut {
+  width: 110px;
+  height: 110px;
+  flex-shrink: 0;
 }
 
-.bar-card {
-  background: #e2712a;
-  transition: width 0.3s ease;
+.tender-donut circle {
+  transition: stroke-dasharray 0.3s ease;
+}
+
+.donut-pct {
+  font: 800 16px 'DM Serif Display', Georgia, serif;
+  fill: #17201f;
+}
+
+.donut-label {
+  font: 700 8px system-ui, sans-serif;
+  fill: #726e64;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .tender-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  padding-top: 4px;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 160px;
 }
 
 .legend-item {
@@ -710,6 +753,54 @@
   font: inherit;
 }
 
+/* Skeleton loading states — CSS-only shimmer, no new dependency. */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+.skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #ede6d8 0%, #f6f1e5 40%, #ede6d8 80%);
+  background-size: 400px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border: 1px solid #ded6c6;
+}
+
+.skeleton-heading {
+  height: 64px;
+  margin-bottom: 24px;
+}
+
+.skeleton-card {
+  height: 92px;
+}
+
+.skeleton-panel {
+  height: 160px;
+}
+
+.skeleton-panel.tall {
+  height: 220px;
+}
+
+.skeleton-line-row {
+  height: 58px;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid #e4dccd;
+}
+
+.skeleton-line-row:last-child {
+  border-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
 /* Responsive Breakpoints */
 @media (max-width: 960px) {
   .report-card-grid {
@@ -754,6 +845,14 @@
     padding: 14px;
   }
   .day-picker input {
+    width: 100%;
+    min-width: 0;
+  }
+  .tender-distribution {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .tender-legend {
     width: 100%;
     min-width: 0;
   }
