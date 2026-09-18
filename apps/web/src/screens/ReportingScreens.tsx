@@ -18,7 +18,7 @@ import {
   type CashierShiftSummary,
 } from '../lib/reporting'
 import { currentAccess } from '../terminal-auth/cache'
-import { configuredApiUrl } from '../lib/catalog'
+import { configuredApiUrl, loadCatalog } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
 import { fetchDailySummary, fetchOrdersPage, fetchOversold, type ServerOversoldProduct } from '../lib/server-reports'
 import { buildCsv, downloadCsv } from '../lib/csv'
@@ -57,8 +57,21 @@ function useFinancialReport(day?: string) {
     setError('')
     void resolveFinancialAccess()
       .then(async access => {
-        const config = await posDb.store_config.get(access.storeId)
-        if (!config) throw new Error('No store configuration is saved in this browser. Open the register online once.')
+        let config = await posDb.store_config.get(access.storeId)
+        // A browser that has never opened the register/products screens has no local catalog
+        // snapshot yet — the app is online-and-offline, so bootstrap it from the server the same
+        // way opening Register would, instead of hard-failing reporting on a brand-new device.
+        if (!config && navigator.onLine) {
+          try {
+            await loadCatalog(access.storeId)
+            config = await posDb.store_config.get(access.storeId)
+          } catch {
+            // Fall through to the "no store configuration" error below — e.g. offline, the
+            // request failed, or there are unresolved outbox entries loadCatalog refuses to
+            // overwrite. Reporting still needs a config either way.
+          }
+        }
+        if (!config) throw new Error('No store configuration is saved in this browser. Connect once with this browser online to load it.')
         const reportDay = day || todayInTimezone(config.timezone)
 
         subscription = liveQuery(async () => {
