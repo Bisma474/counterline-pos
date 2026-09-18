@@ -314,6 +314,59 @@ paths:
         '422': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
         default: { $ref: '#/components/responses/Error' }
+  /reports/daily-summary:
+    get:
+      operationId: getDailySummary
+      summary: Aggregate a store's sales for one calendar day, computed in the store's own timezone
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: date, in: query, required: true, schema: { type: string, format: date }, description: Calendar date (YYYY-MM-DD) in the store's own timezone. }
+      responses:
+        '200': { description: Store-wide totals across every device, content: { application/json: { schema: { $ref: '#/components/schemas/DailySummary' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /reports/orders:
+    get:
+      operationId: getReportOrders
+      summary: Cross-device drill-down of a store's orders for one calendar day
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: Store-scoped order page and next cursor, content: { application/json: { schema: { $ref: '#/components/schemas/ReportOrdersPage' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /reports/oversold:
+    get:
+      operationId: getOversold
+      summary: List products with negative server-truth stock for a store
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Products whose pos_stock.current_stock is below zero, most oversold first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [products]
+                properties:
+                  products: { type: array, items: { $ref: '#/components/schemas/OversoldProduct' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     ownerBearer: { type: http, scheme: bearer, bearerFormat: Supabase JWT }
@@ -357,6 +410,48 @@ components:
             name: { type: string, minLength: 1, maxLength: 30 }
             phone_normalized: { type: string, nullable: true, pattern: '^[1-9][0-9]{3,14}$' }
             client_generated_at: { type: string, format: date-time }
+    DailySummary:
+      type: object
+      required: [grossSalesCents, discountCents, netSalesCents, taxCents, cashTakingsCents, cardTakingsCents, recordedTotalCents, completedOrderCount, averageSaleCents, itemsSold]
+      description: Field names match LocalSalesReport in apps/web/src/lib/reporting.ts so the frontend can consume either shape uniformly.
+      properties:
+        grossSalesCents: { type: integer }
+        discountCents: { type: integer }
+        netSalesCents: { type: integer }
+        taxCents: { type: integer }
+        cashTakingsCents: { type: integer }
+        cardTakingsCents: { type: integer }
+        recordedTotalCents: { type: integer }
+        completedOrderCount: { type: integer }
+        averageSaleCents: { type: integer }
+        itemsSold: { type: integer }
+    ReportOrderSummary:
+      type: object
+      required: [id, receiptNumber, time, totalCents, paymentMethod, itemCount, syncStatus, employeeId, cashierName]
+      properties:
+        id: { type: string, format: uuid }
+        receiptNumber: { type: string }
+        time: { type: string, format: date-time }
+        totalCents: { type: integer }
+        paymentMethod: { type: string, enum: [cash, card, unknown] }
+        itemCount: { type: integer }
+        syncStatus: { type: string, enum: [synced] }
+        employeeId: { type: string, format: uuid, nullable: true }
+        cashierName: { type: string, nullable: true }
+    ReportOrdersPage:
+      type: object
+      required: [orders, next_cursor]
+      properties:
+        orders: { type: array, items: { $ref: '#/components/schemas/ReportOrderSummary' } }
+        next_cursor: { type: string, nullable: true, description: Opaque pagination cursor; null means no further page. }
+    OversoldProduct:
+      type: object
+      required: [id, name, sku, current_stock]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        sku: { type: string }
+        current_stock: { type: integer, description: Negative when oversold. }
     CustomerPushResult:
       type: object
       required: [status, operation_id, customer_id, accepted_checkpoint]
