@@ -86,3 +86,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 /* Manager approval banner inside the cart when a discount exceeds cashier authority. */
 .manager-approval-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 10px 0; padding: 10px 12px; border-radius: 8px; background: #fff0e2; color: #9c4b12; font-size: 12px; font-weight: 700; }
 @media (max-width: 700px) { .discount-actions { justify-content: stretch; } .discount-actions button { flex: 1; } .manager-approval-banner { flex-direction: column; align-items: stretch; text-align: center; } }
+/* Two-up form row (signup currency/timezone, store details fields) */
+.form-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-pair select { border: 1px solid var(--line); background: #fcf9f0; padding: 14px; outline: 0; font: inherit; width: 100%; box-sizing: border-box; }
+.form-pair select:focus { border-color: var(--coral); box-shadow: 3px 3px 0 #e4c276; }
+@media (max-width: 700px) { .form-pair { grid-template-columns: 1fr; } }
