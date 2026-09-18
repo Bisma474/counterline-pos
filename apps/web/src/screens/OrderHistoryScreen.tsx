@@ -7,6 +7,7 @@ import { pushPendingOrders, retryOrder } from '../lib/order-sync'
 import { classifySyncState, canRetrySync, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
 import { saleDate, saleDay } from '../receipts/data'
 import { receiptStore, useReceiptStore } from '../receipts/useReceiptStore'
+import { fetchOrdersPage, type ServerOrderSummary } from '../lib/server-reports'
 import '../receipts/receipts.css'
 
 export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean }) {
@@ -18,6 +19,9 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [remoteOrders, setRemoteOrders] = useState<ServerOrderSummary[]>()
+  const [remoteError, setRemoteError] = useState('')
+  const [currency, setCurrency] = useState('USD')
   useEffect(() => {
     setOrders(undefined); setError('')
     if (!scope.storeId) return
@@ -41,6 +45,27 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     const timer = window.setInterval(handler, 15_000)
     return () => { window.removeEventListener('online', handler); window.clearInterval(timer) }
   }, [scope.storeId, terminal])
+  // Backfill from the cross-device GET /reports/orders endpoint when this browser's local Dexie
+  // history has nothing for the chosen date (new browser, lost local storage) — owner/manager view
+  // only, since /reports/orders requires that Supabase-authenticated role and the cashier terminal
+  // view is intentionally register-local. Only a summary is fetched (no line items/payment), so this
+  // section is a read-only supplement, not a replacement for the local list.
+  useEffect(() => {
+    setRemoteOrders(undefined); setRemoteError('')
+    if (terminal || !scope.storeId || !date || orders === undefined) return
+    if (orders.some(order => saleDay(order) === date)) return
+    let active = true
+    void fetchOrdersPage(scope.storeId, date)
+      .then(page => { if (active) setRemoteOrders(page.orders) })
+      .catch(reason => { if (active) setRemoteError(reason instanceof Error ? reason.message : 'Unable to load orders from other devices.') })
+    return () => { active = false }
+  }, [terminal, scope.storeId, date, orders])
+  useEffect(() => {
+    if (!scope.storeId) return
+    let active = true
+    void posDb.store_config.get(scope.storeId).then(config => { if (active && config) setCurrency(config.currency) })
+    return () => { active = false }
+  }, [scope.storeId])
   const sync = async (orderId?: string) => {
     if (!scope.storeId || busy) return
     setBusy(true); setError(''); setNotice('')
@@ -87,5 +112,26 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
         </article>
       )
     })}</div>
+    {!terminal && date && orders !== undefined && !orders.some(order => saleDay(order) === date) && (
+      <div className="remote-history">
+        <h2>Restored from other devices</h2>
+        {remoteOrders === undefined && !remoteError && <p role="status">Checking other devices for this date…</p>}
+        {remoteError && <p className="history-reason">{remoteError}</p>}
+        {remoteOrders?.length === 0 && <p>No sales recorded on other devices for this date either.</p>}
+        {Boolean(remoteOrders?.length) && (
+          <>
+            <p className="screen-note">This browser has no saved copy of these sales, so only a summary is shown — receipt detail isn't available here.</p>
+            <div className="history-list">{remoteOrders!.map(order => (
+              <article key={order.id}>
+                <div><strong>{order.receiptNumber}</strong><small>{new Date(order.time).toLocaleString()}{order.cashierName ? ` | ${order.cashierName}` : ''}</small></div>
+                <b>{formatCents(order.totalCents, currency)}</b>
+                <span className="order-state synced">Synced</span>
+                <small>{order.itemCount} item{order.itemCount === 1 ? '' : 's'} | {order.paymentMethod}</small>
+              </article>
+            ))}</div>
+          </>
+        )}
+      </div>
+    )}
   </section>
 }
