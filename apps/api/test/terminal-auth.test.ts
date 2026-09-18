@@ -19,6 +19,7 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
   await db.exec(base.replace('create extension if not exists pgcrypto;', ''))
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609150001_terminal_employee_access.sql', import.meta.url), 'utf8'))
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609150002_terminal_device_sessions.sql', import.meta.url), 'utf8'))
+  await db.exec(await readFile(new URL('../../../supabase/migrations/202609180001_terminal_name_uniqueness.sql', import.meta.url), 'utf8'))
   const owner = randomUUID(), cashier = randomUUID(), store = randomUUID(), otherStore = randomUUID()
   await db.query('insert into auth.users(id) values($1),($2)', [owner, cashier])
   await db.query("insert into public.stores(id,name,code,created_by) values($1,'Test store','test-a',$3),($2,'Other store','test-b',$3)", [store, otherStore, owner])
@@ -146,5 +147,41 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
     assert(previous.rows[0].revoked_at)
     const sessions = await db.query<{ count: string }>('select count(*)::text count from public.terminal_device_sessions where device_id=$1 and revoked_at is null', [previousDevice])
     assert.equal(sessions.rows[0].count, '0')
+  })
+  await t.test('two active terminals in a store cannot share a name, case-insensitively', async () => {
+    assert.equal((await call('/devices/provision', { store_id: store, name: 'Duplicate Name' }, 'test-owner')).status, 201)
+    // Provisioning normally auto-revokes the calling browser's previous device, which would
+    // mask a genuine name collision between two different terminals. Use a bare cookie jar
+    // (no refresh cookie presented) to model a second, unrelated browser provisioning a device.
+    const collision = await call('/devices/provision', { store_id: store, name: 'duplicate name' }, 'test-owner', '')
+    assert.equal(collision.status, 409)
+    assert.equal((await collision.json() as { code: string }).code, 'terminal_name_conflict')
+    const stillActive = await db.query<{ count: string }>("select count(*)::text count from public.terminal_devices where store_id=$1 and name='Duplicate Name' and revoked_at is null", [store])
+    assert.equal(stillActive.rows[0].count, '1')
+    // A different store is unaffected by the same name.
+    assert.equal((await call('/devices/provision', { store_id: otherStore, name: 'Duplicate Name' }, 'test-owner', '')).status, 201)
+  })
+  await t.test('reactivating a revoked terminal restores it, unless its name is now taken', async () => {
+    assert.equal((await call(`/terminal-auth/devices/${randomUUID()}/reactivate`, { store_id: store }, 'test-owner')).status, 404) // unknown device
+    const activeAlready = (await db.query<{ id: string }>("select id from public.terminal_devices where store_id=$1 and name='Duplicate Name' and revoked_at is null", [store])).rows[0].id
+    assert.equal((await call(`/terminal-auth/devices/${activeAlready}/reactivate`, { store_id: store }, 'test-owner')).status, 404) // already active
+
+    const provisioned = await (await call('/devices/provision', { store_id: store, name: 'Reactivate Me' }, 'test-owner')).json() as { device: { id: string } }
+    const reactivateMe = provisioned.device.id
+    assert.equal((await call(`/terminal-auth/devices/${reactivateMe}/revoke`, { store_id: store }, 'test-owner')).status, 204)
+    assert.equal((await call(`/terminal-auth/devices/${reactivateMe}/reactivate`, { store_id: store }, 'test-owner')).status, 204)
+    const reactivated = await db.query<{ revoked_at: Date | null }>('select revoked_at from public.terminal_devices where id=$1', [reactivateMe])
+    assert.equal(reactivated.rows[0].revoked_at, null)
+    const management = await (await call(`/terminal-auth/manage/${store}`, undefined, 'test-owner')).json() as { devices: { id: string; revoked_at: string | null }[] }
+    assert.equal(management.devices.find(device => device.id === reactivateMe)?.revoked_at, null)
+
+    // Revoke it again, let another device take its name, then reactivating it must collide.
+    assert.equal((await call(`/terminal-auth/devices/${reactivateMe}/revoke`, { store_id: store }, 'test-owner')).status, 204)
+    assert.equal((await call('/devices/provision', { store_id: store, name: 'Reactivate Me' }, 'test-owner')).status, 201)
+    const conflict = await call(`/terminal-auth/devices/${reactivateMe}/reactivate`, { store_id: store }, 'test-owner')
+    assert.equal(conflict.status, 409)
+    assert.equal((await conflict.json() as { code: string }).code, 'terminal_name_conflict')
+    const stillRevoked = await db.query<{ revoked_at: Date | null }>('select revoked_at from public.terminal_devices where id=$1', [reactivateMe])
+    assert(stillRevoked.rows[0].revoked_at)
   })
 })

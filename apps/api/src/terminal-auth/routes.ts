@@ -125,7 +125,15 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
         }
       }
       const id = randomUUID(), access = token(), refresh = token()
-      const { rows } = await client.query<Device>('insert into public.terminal_devices(id,store_id,name,receipt_prefix,provisioned_by) values($1,$2,$3,$4,$5) returning *', [id, storeId, name, `${id.toUpperCase()}-`, userId])
+      let rows: Device[]
+      try {
+        ;({ rows } = await client.query<Device>('insert into public.terminal_devices(id,store_id,name,receipt_prefix,provisioned_by) values($1,$2,$3,$4,$5) returning *', [id, storeId, name, `${id.toUpperCase()}-`, userId]))
+      } catch (reason) {
+        if (typeof reason === 'object' && reason !== null && 'code' in reason && reason.code === '23505') {
+          fail(409, 'terminal_name_conflict', `A terminal named "${name}" is already active in this store.`)
+        }
+        throw reason
+      }
       await client.query("insert into public.terminal_device_sessions(store_id,device_id,access_hash,access_expires_at,refresh_hash,refresh_expires_at) values($1,$2,$3,now()+interval '15 minutes',$4,now()+interval '30 days')", [storeId, id, digest(access), digest(refresh)])
       return { projection: await snapshot(client, rows[0]), credentials: { access, refresh } }
     })
@@ -169,6 +177,28 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
       const result = await client.query('update public.terminal_devices set revoked_at=coalesce(revoked_at,now()) where id=$1 and store_id=$2', [id, storeId])
       if (!result.rowCount) fail(404, 'device_not_found', 'Terminal not found in this store.')
       await client.query('update public.terminal_device_sessions set revoked_at=coalesce(revoked_at,now()) where device_id=$1 and store_id=$2', [id, storeId])
+    })
+    res.status(204).end()
+  })
+  router.post('/terminal-auth/devices/:id/reactivate', async (req, res) => {
+    const storeId = uuid(body(req).store_id), id = uuid(req.params.id)
+    await transaction(async client => {
+      await manager(req, client, storeId)
+      // Look the device up first: once the update below fails with a unique violation, the
+      // transaction is aborted and no further query on this connection would succeed.
+      const existing = await client.query<{ name: string; revoked_at: Date | null }>('select name,revoked_at from public.terminal_devices where id=$1 and store_id=$2', [id, storeId])
+      if (!existing.rows[0]) fail(404, 'device_not_found', 'Terminal not found in this store.')
+      if (!existing.rows[0].revoked_at) fail(404, 'device_not_found', 'Terminal not found in this store, or it is already active.')
+      try {
+        await client.query('update public.terminal_devices set revoked_at=null where id=$1 and store_id=$2', [id, storeId])
+      } catch (reason) {
+        if (typeof reason === 'object' && reason !== null && 'code' in reason && reason.code === '23505') {
+          fail(409, 'terminal_name_conflict', `Another active terminal already uses the name "${existing.rows[0].name}". Rename one of them before reactivating.`)
+        }
+        throw reason
+      }
+      // A reactivated device keeps its previous device sessions revoked: the browser that was
+      // using it must sign in again, matching how a fresh provisioning always starts clean.
     })
     res.status(204).end()
   })
