@@ -24,8 +24,9 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   const [error, setError] = useState('')
   const [currency, setCurrency] = useState('USD')
   const [employeeId, setEmployeeId] = useState<string | null>(null)
+  const [employeeLoaded, setEmployeeLoaded] = useState(!terminal)
   useEffect(() => { if (storeId) void posDb.store_config.get(storeId).then(config => { if (config) setCurrency(config.currency) }) }, [storeId])
-  useEffect(() => { if (terminal) void readTerminal().then(cache => setEmployeeId(cache?.session?.employee_id ?? null)) }, [terminal])
+  useEffect(() => { if (terminal) void readTerminal().then(cache => { setEmployeeId(cache?.session?.employee_id ?? null); setEmployeeLoaded(true) }) }, [terminal])
   let total = 0
   let amountError = ''
   try { total = totals().totalCents } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Sale amount is invalid.' }
@@ -33,7 +34,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   if (method === 'card') tender = total
   else if (received.trim()) { try { tender = parseCents(received) } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Invalid cash amount.' } }
   const change = tender >= total ? tender - total : 0
-  const canComplete = items.length > 0 && Boolean(storeId) && !amountError && !busy &&
+  const canComplete = items.length > 0 && Boolean(storeId) && !amountError && !busy && employeeLoaded &&
     (method === 'cash' ? tender >= total : cardConfirmed)
   const submit = async () => {
     if (!canComplete || inProgress.current) return
