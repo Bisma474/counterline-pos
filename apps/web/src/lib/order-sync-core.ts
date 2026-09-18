@@ -1,5 +1,34 @@
 import { posDb, type OutboxEntry } from './db'
 
+// FEAT-STAT-02: five distinct sync states, derived from the same OutboxEntry fields the sync
+// engine already tracks (status, failure_kind, lease). Connectivity failures are folded into
+// 'pending' because the engine keeps retrying them automatically; only 'rejected' needs a human.
+export type SyncState = 'pending' | 'in_flight' | 'blocked' | 'rejected' | 'synced'
+
+export function classifySyncState(entry: Pick<OutboxEntry, 'status' | 'failure_kind' | 'lease_owner' | 'lease_expires_at'>, now = Date.now()): SyncState {
+  if (entry.status === 'synced') return 'synced'
+  if (entry.lease_owner && entry.lease_expires_at && Date.parse(entry.lease_expires_at) > now) return 'in_flight'
+  if (entry.failure_kind === 'dependency') return 'blocked'
+  if (entry.failure_kind === 'validation' || entry.failure_kind === 'authentication') return 'rejected'
+  return 'pending'
+}
+
+export const SYNC_STATE_LABELS: Record<SyncState, string> = {
+  pending: 'Pending sync',
+  in_flight: 'Syncing…',
+  blocked: 'Blocked — waiting on dependency',
+  rejected: 'Rejected — needs review',
+  synced: 'Synced',
+}
+
+// The 'rejected' SyncState covers two different failure_kinds that the retry engine treats
+// differently: 'validation' is a genuine, permanent server rejection (retrying resends the same
+// invalid data), while 'authentication' just needs the cashier to sign back in — retryOrderForStore
+// already allows it. Mirror that exact rule here so the UI never disables a retry the engine supports.
+export function canRetrySync(entry: Pick<OutboxEntry, 'status' | 'failure_kind'>): boolean {
+  return entry.status !== 'synced' && entry.failure_kind !== 'validation'
+}
+
 export type PushReply = {
   ok: boolean
   status: number

@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Dexie, { liveQuery } from 'dexie'
 import { formatCents } from '../../../../packages/domain/src/money'
-import { posDb, type LocalOrder } from '../lib/db'
+import { posDb, type LocalOrder, type OutboxEntry } from '../lib/db'
 import { pushPendingOrders, retryOrder } from '../lib/order-sync'
-import { saleDate, saleDay, syncLabel } from '../receipts/data'
+import { classifySyncState, canRetrySync, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
+import { saleDate, saleDay } from '../receipts/data'
 import { receiptStore, useReceiptStore } from '../receipts/useReceiptStore'
 import '../receipts/receipts.css'
 
 export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean }) {
   const scope = useReceiptStore(terminal)
   const [orders, setOrders] = useState<LocalOrder[]>()
+  const [outboxByOrder, setOutboxByOrder] = useState<Map<string, OutboxEntry>>(new Map())
   const [query, setQuery] = useState('')
   const [date, setDate] = useState('')
   const [busy, setBusy] = useState(false)
@@ -22,7 +24,11 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     const subscription = liveQuery(() => posDb.orders.where('[store_id+client_generated_at]')
       .between([scope.storeId, Dexie.minKey], [scope.storeId, Dexie.maxKey]).reverse().toArray())
       .subscribe({ next: setOrders, error: reason => setError(reason instanceof Error ? reason.message : 'Unable to load local orders.') })
-    return () => subscription.unsubscribe()
+    // FEAT-STAT-02: the order's own sync_status collapses several outbox states into "pending";
+    // join the outbox entries so the badge can show pending/in-flight/blocked/rejected/synced distinctly.
+    const outboxSubscription = liveQuery(() => posDb.outbox.where('store_id').equals(scope.storeId).and(entry => entry.entity_type === 'order').toArray())
+      .subscribe({ next: entries => setOutboxByOrder(new Map(entries.map(entry => [entry.order_id, entry]))) })
+    return () => { subscription.unsubscribe(); outboxSubscription.unsubscribe() }
   }, [scope.storeId])
   useEffect(() => {
     if (!scope.storeId) return
@@ -62,19 +68,19 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     {orders?.length === 0 && <p>No orders have been saved for this store in this browser yet.</p>}
     {Boolean(orders?.length) && !visible.length && <p>No orders match your search.</p>}
     <div className="history-list">{visible.map(order => {
-      // Determine if this order can be retried
-      const canRetry = order.sync_status === 'pending' && Boolean(order.failure_reason)
-      // Human-friendly failure message
+      const outboxEntry = outboxByOrder.get(order.id)
+      const state: SyncState = outboxEntry ? classifySyncState(outboxEntry) : order.sync_status === 'synced' ? 'synced' : order.sync_status === 'failed' ? 'rejected' : 'pending'
+      // Mirror retryOrderForStore's own gate (order-sync-core.ts): every failure kind except a
+      // genuine server-side 'validation' rejection can be retried, including 'authentication'
+      // once the cashier signs back in. Using the 5-way display state here would have wrongly
+      // disabled retry for authentication failures too, since both share the 'rejected' badge.
+      const canRetry = Boolean(order.failure_reason) && (outboxEntry ? canRetrySync(outboxEntry) : order.sync_status !== 'synced')
       const failureMsg = order.failure_reason
-        ? order.failure_reason.includes('customer link')
-            ? order.failure_reason   // already descriptive from our new sync core message
-            : order.failure_reason
-        : null
       return (
         <article key={order.id}>
           <div><strong>{order.receipt_number}</strong><small>{saleDate(order)} | {order.timezone_snapshot}</small></div>
           <b>{formatCents(order.total_cents, order.currency)}</b>
-          <span className={`order-state ${order.sync_status}`}>{syncLabel(order)}</span>
+          <span className={`order-state ${state}`}>{SYNC_STATE_LABELS[state]}</span>
           <Link className="receipt-detail-link" to={`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(order.id)}`}>View receipt / print</Link>
           {canRetry && <button type="button" disabled={busy} onClick={() => void sync(order.id)}>Retry now</button>}
           {failureMsg && <p className="history-reason">{failureMsg}</p>}
