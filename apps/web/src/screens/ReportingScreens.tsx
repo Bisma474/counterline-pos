@@ -20,7 +20,7 @@ import {
 import { currentAccess } from '../terminal-auth/cache'
 import { configuredApiUrl } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
-import { fetchDailySummary } from '../lib/server-reports'
+import { fetchDailySummary, fetchOrdersPage, fetchOversold, type ServerOversoldProduct } from '../lib/server-reports'
 import { buildCsv, downloadCsv } from '../lib/csv'
 import './reporting.css'
 
@@ -144,6 +144,89 @@ function useFinancialReport(day?: string) {
   return { state, error }
 }
 
+// Oversold panel data: pulled straight from /reports/oversold (server truth across every device),
+// unlike calculateLowStockItems which only reflects this browser's synced stock projection. Only
+// meaningful when the API is reachable — there is no offline/local equivalent to fall back to, so
+// the panel simply stays empty rather than showing stale or misleading data.
+function useOversoldProducts(storeId: string | undefined) {
+  const [products, setProducts] = useState<ServerOversoldProduct[]>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    setProducts(undefined)
+    setError('')
+    if (!storeId) return
+    void (async () => {
+      if (!(await isApiReachable())) {
+        if (active) setError('Connect to the internet to load server-wide oversold products.')
+        return
+      }
+      try {
+        const result = await fetchOversold(storeId)
+        if (active) setProducts(result)
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'Unable to load oversold products.')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId])
+  return { products, error }
+}
+
+export interface CashierBreakdownRow { employeeId: string | null; name: string; orderCount: number; totalCents: number }
+
+// Sales-by-cashier: pages through the same cross-device /reports/orders drill-down used for remote
+// history restoration, grouping by cashierName/employeeId. Server-only (like the oversold panel) —
+// employee attribution across every device isn't available from a single browser's local Dexie data.
+function useCashierBreakdown(storeId: string | undefined, day: string | undefined) {
+  const [rows, setRows] = useState<CashierBreakdownRow[]>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    setRows(undefined)
+    setError('')
+    if (!storeId || !day) return
+    void (async () => {
+      if (!(await isApiReachable())) {
+        if (active) setError('Connect to the internet to load the cashier breakdown.')
+        return
+      }
+      try {
+        const totals = new Map<string, CashierBreakdownRow>()
+        let cursor: string | null | undefined
+        do {
+          const page = await fetchOrdersPage(storeId, day, cursor, 200)
+          for (const order of page.orders) {
+            const key = order.employeeId ?? 'unassigned'
+            const existing = totals.get(key)
+            if (existing) {
+              existing.orderCount += 1
+              existing.totalCents += order.totalCents
+            } else {
+              totals.set(key, {
+                employeeId: order.employeeId,
+                name: order.cashierName ?? 'Unassigned',
+                orderCount: 1,
+                totalCents: order.totalCents,
+              })
+            }
+          }
+          cursor = page.next_cursor
+        } while (cursor && active)
+        if (active) setRows(Array.from(totals.values()).sort((a, b) => b.totalCents - a.totalCents))
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'Unable to load the cashier breakdown.')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId, day])
+  return { rows, error }
+}
+
 const Money = ({ cents, currency }: { cents: number; currency: string }) => <>{formatCents(cents, currency)}</>
 
 // Builds the same rows regardless of whether `report` came from the local Dexie calculation or the
@@ -179,6 +262,7 @@ function exportDailyReportCsv(state: ReportState) {
 
 export function OwnerDashboardScreen() {
   const { state, error } = useFinancialReport()
+  const { products: oversoldProducts, error: oversoldError } = useOversoldProducts(state?.storeId)
   if (error) return <AccessMessage message={error} />
   if (!state) return <section className="reporting-page" role="status">Checking reporting access and local sales…</section>
   const { report, config, topProducts, lowStock, recentOrders } = state
@@ -300,6 +384,32 @@ export function OwnerDashboardScreen() {
             <p className="empty-panel-copy healthy">✓ All product inventory levels are healthy.</p>
           )}
         </section>
+
+        <section className="dashboard-panel">
+          <div className="panel-header">
+            <h2>Oversold products</h2>
+            <small>Server-wide stock gone negative, across every device</small>
+          </div>
+          {oversoldError ? (
+            <p className="empty-panel-copy">{oversoldError}</p>
+          ) : oversoldProducts === undefined ? (
+            <p className="empty-panel-copy" role="status">Loading server oversold data…</p>
+          ) : oversoldProducts.length ? (
+            <ul className="alert-list">
+              {oversoldProducts.map(item => (
+                <li key={item.id} className="alert-row">
+                  <div>
+                    <strong>{item.name}</strong>
+                    <small>SKU: {item.sku}</small>
+                  </div>
+                  <span className="stock-pill out">{item.current_stock} oversold</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="empty-panel-copy healthy">✓ No products are oversold across the store.</p>
+          )}
+        </section>
       </div>
 
       {/* Recent Store Orders */}
@@ -349,6 +459,7 @@ export function OwnerDashboardScreen() {
 export function ReportsScreen() {
   const [day, setDay] = useState('')
   const { state, error } = useFinancialReport(day || undefined)
+  const { rows: cashierRows, error: cashierError } = useCashierBreakdown(state?.storeId, state?.day)
   useEffect(() => {
     if (state && !day) setDay(todayInTimezone(state.config.timezone))
   }, [state, day])
@@ -392,6 +503,32 @@ export function ReportsScreen() {
             </div>
             <StatusAmount label="Pending" count={state.report.pendingCount} cents={state.report.pendingAmountCents} currency={state.config.currency} />
             <StatusAmount label="Rejected" count={state.report.rejectedCount} cents={state.report.rejectedAmountCents} currency={state.config.currency} rejected />
+          </section>
+
+          <section className="dashboard-panel">
+            <div className="panel-header">
+              <h2>Sales by cashier</h2>
+              <small>Cross-device totals for {day}</small>
+            </div>
+            {cashierError ? (
+              <p className="empty-panel-copy">{cashierError}</p>
+            ) : cashierRows === undefined ? (
+              <p className="empty-panel-copy" role="status">Loading cashier breakdown…</p>
+            ) : cashierRows.length ? (
+              <ul className="ranked-list">
+                {cashierRows.map(row => (
+                  <li key={row.employeeId ?? 'unassigned'} className="ranked-row">
+                    <div className="ranked-details">
+                      <strong>{row.name}</strong>
+                      <small>{row.orderCount} {row.orderCount === 1 ? 'sale' : 'sales'}</small>
+                    </div>
+                    <b><Money cents={row.totalCents} currency={state.config.currency} /></b>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-panel-copy">No sales recorded for this day yet.</p>
+            )}
           </section>
         </>
       )}
