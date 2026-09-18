@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { db } from '../db.js'
 import { ApiError, requireStoreMember, sendApiError } from './auth.js'
 import { boundedInteger, calculateDiscountedLine, discountNeedsManagerApproval, MAX_CENTS, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money.js'
-import { requireDeviceTerminal } from '../terminal-auth/routes.js'
+import { requireCashierTerminal, requireDeviceTerminal } from '../terminal-auth/routes.js'
 
 export const ordersRouter = Router()
 export const terminalOrdersRouter = Router()
@@ -123,6 +123,12 @@ async function push(req: import('express').Request, res: import('express').Respo
     if (terminal) {
       const session = await requireDeviceTerminal(req, db)
       if (session.storeId !== operation.storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+      // Prefer the currently authenticated cashier's identity over whatever the client sent, so a
+      // sale can't be attributed to a different employee than the one actually unlocked on this
+      // device. A device-only session (queued sale synced after logout) has no cashier to check
+      // against, so it falls back to the client-sent value's best-effort existence check below.
+      try { operation.order.employee_id = (await requireCashierTerminal(req, db)).employeeId }
+      catch { /* no active cashier session on this device right now */ }
     } else await requireStoreMember(req, operation.storeId)
     const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex')
     const client = await db.connect()
