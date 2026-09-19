@@ -92,9 +92,23 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 .form-pair select:focus { border-color: var(--coral); box-shadow: 3px 3px 0 #e4c276; }
 @media (max-width: 700px) { .form-pair { grid-template-columns: 1fr; } }
 /* Sidebar store switcher — shown only for accounts with more than one active store */
-.store-switcher { display: grid; gap: 4px; margin-bottom: 10px; }
-.store-switcher-label { font: 500 9px 'DM Mono', monospace; letter-spacing: .12em; text-transform: uppercase; color: #9fb0a2; }
-.store-switcher select { width: 100%; background: #1c3829; border: 1px solid #3c5948; color: #fffdf3; padding: 8px 10px; font-size: 12px; border-radius: 4px; }
+/* Lives in .app-top (light background) — see the block comment in StoreSwitcher.tsx for why
+   it isn't in .app-sidebar, which disappears entirely on mobile. The "Store" label is dropped
+   visually (kept as an aria-label on the select) to stay compact in an already-busy header. */
+.store-switcher { display: inline-flex; align-items: center; }
+.store-switcher-label { display: none; }
+.store-switcher select {
+  background: transparent;
+  border: 1px solid #c7c0ae;
+  color: var(--ink);
+  padding: 7px 8px;
+  font: 500 11px 'DM Sans', sans-serif;
+  border-radius: 4px;
+  max-width: 150px;
+}
 .store-switcher select:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .store-switcher select { max-width: 88px; font-size: 9px; padding: 5px 6px; }
+}
 /* Product photo on the register catalog card — same box as .product-art so cards don't reflow */
 .product-art-img { height: 115px; width: 100%; object-fit: cover; border-radius: 3px; background: #d9cfbc; }
