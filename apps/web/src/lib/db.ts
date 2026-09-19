@@ -79,6 +79,8 @@ export interface LocalOrder {
   customer_id?: string | null
   manager_id?: string | null          // approving manager's employee id, when any line needed approval
   manager_approved_at?: string | null // ISO 8601, when any line needed approval
+  refunded_at?: string | null         // ISO 8601; set locally right after POST /orders/:id/refund succeeds
+  refunded_amount_cents?: number | null // integer cents; the whole-order amount reversed
 }
 
 export interface LocalCustomer {

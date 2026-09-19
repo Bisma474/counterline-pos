@@ -244,7 +244,7 @@ export function OwnerDashboardScreen() {
                     <td>{new Date(o.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
                     <td>{o.itemCount} {o.itemCount === 1 ? 'item' : 'items'}</td>
                     <td><span className={`method-badge ${o.paymentMethod}`}>{o.paymentMethod.toUpperCase()}</span></td>
-                    <td><span className={`sync-pill ${o.syncStatus}`}>{o.syncStatus}</span></td>
+                    <td><span className={`sync-pill ${o.refunded ? 'refunded' : o.syncStatus}`}>{o.refunded ? 'refunded' : o.syncStatus}</span></td>
                     <td className="num"><strong><Money cents={o.totalCents} currency={config.currency} /></strong></td>
                   </tr>
                 ))}
@@ -291,7 +291,7 @@ export function ReportsScreen() {
             <ReportLine label="Tax collected" hint="Recorded tax amounts" cents={state.report.taxCents} currency={state.config.currency} />
             <ReportLine label="Cash takings" hint="Payment amount; change excluded" cents={state.report.cashTakingsCents} currency={state.config.currency} />
             <ReportLine label="Card takings" hint="Recorded external-card payments" cents={state.report.cardTakingsCents} currency={state.config.currency} />
-            <ReportLine label="Recorded total" hint={`${state.report.completedOrderCount} completed order${state.report.completedOrderCount === 1 ? '' : 's'}`} cents={state.report.recordedTotalCents} currency={state.config.currency} emphasized />
+            <ReportLine label="Recorded total" hint={`${state.report.completedOrderCount} completed order${state.report.completedOrderCount === 1 ? '' : 's'} — refunded sales excluded`} cents={state.report.recordedTotalCents} currency={state.config.currency} emphasized />
           </div>
           <section className="unresolved-panel">
             <div>
@@ -300,6 +300,13 @@ export function ReportsScreen() {
             </div>
             <StatusAmount label="Pending" count={state.report.pendingCount} cents={state.report.pendingAmountCents} currency={state.config.currency} />
             <StatusAmount label="Rejected" count={state.report.rejectedCount} cents={state.report.rejectedAmountCents} currency={state.config.currency} rejected />
+          </section>
+          <section className="unresolved-panel">
+            <div>
+              <h2>Refunds</h2>
+              <p>Reversed sales — excluded from every total above, not just netted out of it.</p>
+            </div>
+            <StatusAmount label="Refunded" count={state.report.refundedCount} cents={state.report.refundedAmountCents} currency={state.config.currency} rejected />
           </section>
         </>
       )}
@@ -474,7 +481,7 @@ export function CashierDashboardScreen() {
                 <li key={o.id} className="cashier-recent-row">
                   <div className="receipt-meta">
                     <strong>{o.receiptNumber}</strong>
-                    <small>{new Date(o.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {o.itemCount} items</small>
+                    <small>{new Date(o.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {o.itemCount} items{o.refunded && <span className="sync-pill refunded" style={{ marginLeft: 6 }}>refunded</span>}</small>
                   </div>
                   <div className="receipt-end">
                     <b><Money cents={o.totalCents} currency={state.currency} /></b>

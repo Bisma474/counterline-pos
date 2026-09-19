@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigationType, useParams } from 'react-router-dom'
 import { liveQuery } from 'dexie'
+import { formatCents } from '../../../../packages/domain/src/money'
 import { readReceipt, syncLabel, type SavedReceipt } from './data'
 import { ReceiptOutput } from './ReceiptOutput'
 import { useReceiptStore } from './useReceiptStore'
 import { accessToken, configuredApiUrl } from '../lib/catalog'
+import { posDb } from '../lib/db'
 import { requireSupabase } from '../lib/supabase'
 
 export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
@@ -30,7 +32,6 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
   // that role the same way RegisterScreen resolves customer-access authorization.
   const [canRefund, setCanRefund] = useState(false)
   const [refunding, setRefunding] = useState(false)
-  const [refundResult, setRefundResult] = useState<'refunded' | 'already' | null>(null)
   const [refundError, setRefundError] = useState('')
   useEffect(() => {
     if (terminal || !scope.storeId) return
@@ -47,6 +48,11 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
     return () => { active = false }
   }, [terminal, scope.storeId])
 
+  // "Refunded" is derived straight from the local order record (receipt.order.refunded_at), not
+  // from transient component state — posDb.orders.update() below feeds the same liveQuery this
+  // screen already subscribes to, so the banner survives a reload instead of resetting to the
+  // "Refund this receipt" button every time, and every screen reading local sales (reports, order
+  // history) sees the same fact immediately.
   const submitRefund = async () => {
     if (!receipt || refunding) return
     if (!window.confirm(`Refund receipt ${receipt.order.receipt_number} for the full sale amount? This cannot be undone.`)) return
@@ -60,12 +66,19 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ store_id: receipt.order.store_id }),
       })
-      const data = (await response.json()) as { code?: string; message?: string }
+      const data = (await response.json()) as { code?: string; message?: string; refund?: { amount_cents: string } }
       if (!response.ok) {
-        if (data.code === 'refund_conflict') { setRefundResult('already'); return }
+        if (data.code === 'refund_conflict') {
+          // The server already had this order refunded (e.g. a prior attempt succeeded but this
+          // browser never heard back) — bring the local record in line rather than leaving it
+          // permanently out of sync with reality.
+          await posDb.orders.update(receipt.order.id, { refunded_at: new Date().toISOString(), refunded_amount_cents: receipt.order.total_cents })
+          return
+        }
         throw new Error(data.message ?? `Server error (${response.status})`)
       }
-      setRefundResult('refunded')
+      const amountCents = data.refund ? Number(data.refund.amount_cents) : receipt.order.total_cents
+      await posDb.orders.update(receipt.order.id, { refunded_at: new Date().toISOString(), refunded_amount_cents: amountCents })
     } catch (reason) {
       setRefundError(reason instanceof Error ? reason.message : 'Could not refund this order.')
     } finally {
@@ -81,8 +94,8 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
       : <><p role="status">{fresh ? 'Sale saved in this browser. ' : ''}{syncLabel(receipt.order)}{receipt.order.failure_reason ? ` — ${receipt.order.failure_reason}` : ''}</p>
         <ReceiptOutput key={receipt.order.id} receipt={receipt} fresh={fresh} />
         {canRefund && receipt.order.sync_status === 'synced' && <div className="refund-action">
-          {refundResult === 'refunded' ? <p role="status">This order has been refunded.</p>
-            : refundResult === 'already' ? <p role="status">This order was already refunded.</p>
+          {receipt.order.refunded_at
+            ? <p role="status">Refunded {formatCents(receipt.order.refunded_amount_cents ?? receipt.order.total_cents, receipt.order.currency)} on {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(receipt.order.refunded_at))}.</p>
             : <><button type="button" className="cta" onClick={() => void submitRefund()} disabled={refunding}>{refunding ? 'Refunding…' : 'Refund this receipt'}</button>
               {refundError && <p role="alert" className="form-notice error">{refundError}</p>}</>}
         </div>}</>}

@@ -65,6 +65,7 @@ identity.use((req, res, next) => { if (req.headers.authorization !== `Bearer ${t
 identity.get('/auth/v1/user', (_req, res) => { res.json(user) })
 identity.get('/rest/v1/store_memberships', (_req, res) => { res.json([{ store_id: store, role: 'owner', user_id: owner, active: true, joined_at: new Date().toISOString() }]) })
 identity.get('/rest/v1/profiles', (_req, res) => { res.json([{ id: owner, full_name: 'Fixture Owner' }]) })
+identity.get('/rest/v1/stores', (_req, res) => { res.json([{ id: store, name: 'Fixture Catalog Store' }]) })
 const identityServer = identity.listen(3189, '127.0.0.1')
 const web = express()
 web.use('/api', createApp({ pool: db, origin: 'http://127.0.0.1:3188', supabaseUrl: 'http://127.0.0.1:3189', supabaseKey: 'fixture', secureCookies: false }))

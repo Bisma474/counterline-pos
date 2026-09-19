@@ -41,7 +41,29 @@ test('reconciles local sales, excludes cash change, and keeps unresolved sales i
     cashTakingsCents: 990, cardTakingsCents: 2200, recordedTotalCents: 3190,
     completedOrderCount: 2, averageSaleCents: 1595, itemsSold: 5,
     pendingCount: 1, pendingAmountCents: 990, rejectedCount: 1, rejectedAmountCents: 2200,
+    refundedCount: 0, refundedAmountCents: 0,
   })
+})
+
+test('a refunded sale is excluded from every total, not just netted out, and counted separately', () => {
+  const orders = [
+    order({ id: 'kept', store_id: 'store-a', client_generated_at: '2026-09-16T10:00:00.000Z', subtotal_cents: 1000, tax_cents: 100, total_cents: 1100 }),
+    order({ id: 'refunded', store_id: 'store-a', client_generated_at: '2026-09-16T11:00:00.000Z', subtotal_cents: 2000, tax_cents: 200, total_cents: 2200,
+      refunded_at: '2026-09-16T12:00:00.000Z', refunded_amount_cents: 2200 }),
+  ]
+  const report = calculateLocalSalesReport('store-a', '2026-09-16', 'Asia/Karachi', {
+    orders, items: [item('kept', 1), item('refunded', 3)],
+    payments: [payment('kept', 'cash', 1100), payment('refunded', 'card', 2200)],
+    outbox: [],
+  })
+  assert.equal(report.completedOrderCount, 1, 'the refunded order must not count as a completed sale')
+  assert.equal(report.recordedTotalCents, 1100, 'the refunded order must not inflate the recorded total')
+  assert.equal(report.grossSalesCents, 1000)
+  assert.equal(report.taxCents, 100)
+  assert.equal(report.cardTakingsCents, 0, 'the refunded card payment must not count as takings')
+  assert.equal(report.itemsSold, 1, 'the refunded item must not count as sold')
+  assert.equal(report.refundedCount, 1)
+  assert.equal(report.refundedAmountCents, 2200)
 })
 
 test('returns integer zero values for a day without orders and treats old discounts as zero', () => {

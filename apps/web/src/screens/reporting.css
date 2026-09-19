@@ -436,6 +436,7 @@
 .sync-pill.synced { background: #e2f5e7; color: #1d7b4b; }
 .sync-pill.pending { background: #fff0d6; color: #8e5c10; }
 .sync-pill.failed { background: #fee4e2; color: #b42318; }
+.sync-pill.refunded { background: #ece7f5; color: #5b3fa8; }
 
 /* Cashier Actions Bar */
 .cashier-actions-bar {

@@ -6,7 +6,8 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { accessToken, activeStoreId, configuredApiUrl, loadCatalog } from '../lib/catalog'
+import { accessToken, activeStoreId, configuredApiUrl } from '../lib/catalog'
+import { posDb } from '../lib/db'
 import { CURRENCY_OPTIONS, timezoneOptions } from '../lib/locale-options'
 
 interface StoreRecord {
@@ -74,12 +75,13 @@ export function StoreDetails() {
       if (!response.ok) throw new Error(data.message ?? `Server error (${response.status})`)
       setStore(data)
       // Currency and timezone feed every money/clock display cached locally (Register, receipts,
-      // reports). Refresh the local catalog snapshot so those screens pick up the change without
-      // requiring the owner to know to hit "Refresh catalog" themselves.
-      try {
-        await loadCatalog(storeId)
-      } catch {
-        // Best-effort: the server value is already saved even if this device can't refresh right now.
+      // reports) via posDb.store_config — patch it directly rather than calling loadCatalog(),
+      // which refuses to run at all while this store has any pending/unresolved outbox entry
+      // (by design, to protect stock refresh) and would silently no-op here, leaving the local
+      // cache stale even though the server save succeeded.
+      const cachedConfig = await posDb.store_config.get(storeId)
+      if (cachedConfig) {
+        await posDb.store_config.put({ ...cachedConfig, currency: data.currency, timezone: data.timezone })
       }
       setMessage('Store details saved.')
     } catch (reason) {

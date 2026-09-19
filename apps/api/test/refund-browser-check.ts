@@ -84,6 +84,7 @@ identity.get('/rest/v1/store_memberships', (req, res) => {
   res.json([{ store_id: store, role: isOwner ? 'owner' : 'cashier', user_id: isOwner ? owner : cashier, active: true, joined_at: new Date().toISOString() }])
 })
 identity.get('/rest/v1/profiles', (_req, res) => { res.json([{ id: owner, full_name: 'Fixture Owner' }]) })
+identity.get('/rest/v1/stores', (_req, res) => { res.json([{ id: store, name: 'Fixture Refund Store' }]) })
 const identityServer = identity.listen(3193, '127.0.0.1')
 
 const web = express()
@@ -135,7 +136,7 @@ try {
   //    token (there is no UI path for this — the button is owner/manager only — so this checks
   //    the server-side gate itself, not just that the button is hidden).
   const cashierAttempt = await fetch(`http://127.0.0.1:3192/api/orders/${orderId}/refund`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cashierToken}` },
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cashierToken}`, Origin: 'http://127.0.0.1:3192' },
     body: JSON.stringify({ store_id: store }),
   })
   assert.equal(cashierAttempt.status, 403, 'A cashier must not be able to refund an order')
@@ -147,7 +148,7 @@ try {
   await page.getByRole('button', { name: 'Refund this receipt' }).click()
   const response = await refundResponse
   assert.equal(response.status(), 201, 'POST /orders/:id/refund should return 201 on success')
-  await expect(page.getByText('This order has been refunded.')).toBeVisible()
+  await expect(page.getByText('Refunded', { exact: false })).toBeVisible()
   await page.screenshot({ path: `${pictures}receipt-after-refund-1440.png`, fullPage: true })
 
   // 4. Verify the transaction actually committed: pos_refunds, pos_refund_items, reversed stock,
@@ -165,16 +166,22 @@ try {
   const feed = await database.query<{ entity_type: string }>('select entity_type from public.pos_change_feed where store_id=$1 order by position desc limit 2', [store])
   assert.deepEqual(feed.rows.map(row => row.entity_type).sort(), ['refund', 'stock'], 'The refund should write both a refund and a stock change_feed entry')
 
-  // 5. A second refund attempt on the same order must be rejected as a conflict, not silently
-  //    accepted twice — reload first since the UI only knows about the outcome of its own request.
+  // 5. The refunded state must persist locally across a reload (it's written to the local order
+  //    record, not held in transient component state) — reload and confirm the button is gone and
+  //    the "Refunded" banner shows immediately, with no new request needed to know that.
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Receipt.' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Refund this receipt' })).toBeVisible()
-  const secondAttempt = page.waitForResponse(response => response.url().includes('/refund') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: 'Refund this receipt' }).click()
-  const secondResponse = await secondAttempt
-  assert.equal(secondResponse.status(), 409, 'A second refund of the same order should be rejected as a conflict')
-  await expect(page.getByText('This order was already refunded.')).toBeVisible()
+  await expect(page.getByText('Refunded', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Refund this receipt' })).toHaveCount(0)
+
+  // 6. The server-side guard must independently reject a second refund of the same order as a
+  //    conflict, not silently accept it twice — simulated as a direct API call (e.g. a second
+  //    device that doesn't yet know locally that this order was refunded).
+  const secondAttempt = await fetch(`http://127.0.0.1:3192/api/orders/${orderId}/refund`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}`, Origin: 'http://127.0.0.1:3192' },
+    body: JSON.stringify({ store_id: store }),
+  })
+  assert.equal(secondAttempt.status, 409, 'A second refund of the same order should be rejected as a conflict')
   const refundCount = await database.query('select 1 from public.pos_refunds where store_id=$1 and order_id=$2', [store, orderId])
   assert.equal(refundCount.rowCount, 1, 'Exactly one refund row must exist no matter how many times refund is attempted')
 

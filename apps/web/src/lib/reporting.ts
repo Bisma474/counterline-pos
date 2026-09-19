@@ -15,6 +15,8 @@ export interface LocalSalesReport {
   pendingAmountCents: number
   rejectedCount: number
   rejectedAmountCents: number
+  refundedCount: number
+  refundedAmountCents: number
 }
 
 export interface ReportingData {
@@ -29,6 +31,7 @@ const emptyReport = (): LocalSalesReport => ({
   cashTakingsCents: 0, cardTakingsCents: 0, recordedTotalCents: 0,
   completedOrderCount: 0, averageSaleCents: 0, itemsSold: 0,
   pendingCount: 0, pendingAmountCents: 0, rejectedCount: 0, rejectedAmountCents: 0,
+  refundedCount: 0, refundedAmountCents: 0,
 })
 
 export function calendarDay(instant: string, timezone: string): string {
@@ -47,12 +50,21 @@ export function todayInTimezone(timezone: string, now = new Date()): string {
 
 export function calculateLocalSalesReport(storeId: string, day: string, timezone: string, data: ReportingData): LocalSalesReport {
   const report = emptyReport()
-  const orders = data.orders.filter(order => order.store_id === storeId && calendarDay(order.client_generated_at, timezone) === day)
-  if (!orders.length) return report
+  const dayOrders = data.orders.filter(order => order.store_id === storeId && calendarDay(order.client_generated_at, timezone) === day)
+  if (!dayOrders.length) return report
+  // A refund reverses the entire sale — it must not keep inflating gross/net/tax/takings, items
+  // sold, or the completed-order count, the same way a void would. It's tracked separately here
+  // so management still sees that it happened, rather than the sale just silently vanishing.
+  const orders = dayOrders.filter(order => !order.refunded_at)
   const orderIds = new Set(orders.map(order => order.id))
   const outboxByOrder = new Map(data.outbox.filter(entry => entry.store_id === storeId && orderIds.has(entry.order_id)).map(entry => [entry.order_id, entry]))
 
-  for (const order of orders) {
+  for (const order of dayOrders) {
+    if (order.refunded_at) {
+      report.refundedCount += 1
+      report.refundedAmountCents += order.refunded_amount_cents ?? order.total_cents
+      continue
+    }
     const discount = order.discount_cents ?? 0
     report.grossSalesCents += order.subtotal_cents
     report.discountCents += discount
@@ -92,7 +104,8 @@ export interface TopProduct {
 }
 
 export function calculateTopProducts(items: LocalOrderItem[], orders: LocalOrder[], storeId: string, day: string, timezone: string, limit = 4): TopProduct[] {
-  const storeOrders = new Set(orders.filter(o => o.store_id === storeId && calendarDay(o.client_generated_at, timezone) === day).map(o => o.id))
+  // A refunded item was returned — it should not count toward what actually sold.
+  const storeOrders = new Set(orders.filter(o => o.store_id === storeId && !o.refunded_at && calendarDay(o.client_generated_at, timezone) === day).map(o => o.id))
   if (!storeOrders.size) return []
   const map = new Map<string, { name: string; quantity: number; totalCents: number }>()
   for (const item of items) {
@@ -145,6 +158,7 @@ export interface RecentOrderSummary {
   paymentMethod: 'cash' | 'card' | 'unknown'
   itemCount: number
   syncStatus: 'synced' | 'pending' | 'failed'
+  refunded: boolean
 }
 
 export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], payments: LocalPayment[], storeId: string, limit = 5): RecentOrderSummary[] {
@@ -165,6 +179,7 @@ export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], p
     paymentMethod: paymentMap.get(o.id) ?? 'unknown',
     itemCount: itemCountMap.get(o.id) ?? 0,
     syncStatus: o.sync_status,
+    refunded: Boolean(o.refunded_at),
   }))
 }
 
@@ -183,7 +198,8 @@ export function calculateCashierShift(
   day: string,
   timezone: string,
 ): CashierShiftSummary {
-  const todayOrders = orders.filter(o => o.store_id === storeId && calendarDay(o.client_generated_at, timezone) === day)
+  // A refunded sale is reversed — it should not still count toward this shift's takings.
+  const todayOrders = orders.filter(o => o.store_id === storeId && !o.refunded_at && calendarDay(o.client_generated_at, timezone) === day)
   const orderIds = new Set(todayOrders.map(o => o.id))
   let cashCents = 0
   let cardCents = 0
