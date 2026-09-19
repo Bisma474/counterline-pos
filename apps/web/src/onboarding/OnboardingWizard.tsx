@@ -101,13 +101,12 @@ export function OnboardingWizard() {
   }
 
   if (loading) return <main className="route-pending" role="status">Loading…</main>
-  if (error && !store) return <main className="auth-page"><section className="auth-form"><div className="form-card"><p role="alert" className="form-notice error">{error}</p></div></section></main>
+  if (error && !store) return <main className="onboarding-page"><div className="form-card"><p role="alert" className="form-notice error">{error}</p></div></main>
 
-  return <main className="auth-page">
-    <section className="auth-form">
-      <div className="form-card onboarding-wizard">
-        <p className="kicker">STEP {step + 1} OF {STEPS.length}</p>
-        <h2>{STEPS[step]}</h2>
+  return <main className="onboarding-page">
+    <div className="form-card onboarding-wizard">
+      <p className="kicker">STEP {step + 1} OF {STEPS.length}</p>
+      <h2>{STEPS[step]}</h2>
         {error && <p role="alert" className="form-notice error">{error}</p>}
         {step === 0 && store && <form onSubmit={event => void submitProfile(event)} noValidate>
           <p className="form-copy">Confirm the details customers and receipts will use.</p>
@@ -128,7 +127,6 @@ export function OnboardingWizard() {
           <button className="cta" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Finish setup'}<b aria-hidden="true">→</b></button>
         </form>}
         <p className="onboarding-progress" aria-hidden="true">{STEPS.map((label, index) => <span key={label} className={index === step ? 'active' : index < step || (index === 1 && terminalDone) || (index === 2 && staffDone) ? 'done' : ''}>{label}</span>)}</p>
-      </div>
-    </section>
+    </div>
   </main>
 }

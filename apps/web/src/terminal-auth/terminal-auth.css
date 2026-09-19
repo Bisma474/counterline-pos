@@ -53,3 +53,9 @@
 .manager-approval-head h1 { margin: 2px 0 0; font-size: 26px; letter-spacing: -.03em; }
 .manager-approval-reason { color: #667085; font-size: 13px; line-height: 1.5; margin: 6px 0 18px; }
 @media (max-width: 480px) { .manager-approval-dialog { padding: 22px 18px; } .manager-approval-head h1 { font-size: 23px; } }
+
+.onboarding-page { min-height: 100vh; display: grid; place-items: center; background: var(--paper); padding: 40px; }
+.onboarding-wizard { width: min(100%, 410px); }
+.onboarding-progress { display: flex; gap: 8px; margin-top: 28px; font-size: 11px; }
+.onboarding-progress span { flex: 1; padding-top: 8px; border-top: 3px solid var(--line); color: var(--muted); }
+.onboarding-progress span.active, .onboarding-progress span.done { border-top-color: var(--coral); color: var(--ink); }
