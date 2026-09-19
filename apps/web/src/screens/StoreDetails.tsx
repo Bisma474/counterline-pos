@@ -1,14 +1,17 @@
 /**
  * StoreDetails — Owner/Manager settings screen at /settings/store.
  * Lets an owner or manager edit currency, timezone, address and country after the store
- * has already been created (Signup only collects currency/timezone up front). Reuses the
- * existing .invite-form card styling from SettingsOverview for visual consistency.
+ * has already been created (Signup only collects currency/timezone up front). Built on
+ * product-catalog.css's premium backoffice shell (hero, groups, fields) for visual parity
+ * with the rest of the owner/manager backoffice, rather than the plain generic form styling
+ * this screen originally reused from the invite form.
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { accessToken, activeStoreId, configuredApiUrl } from '../lib/catalog'
 import { posDb } from '../lib/db'
 import { CURRENCY_OPTIONS, timezoneOptions } from '../lib/locale-options'
+import './product-catalog.css'
 
 interface StoreRecord {
   id: string
@@ -92,74 +95,122 @@ export function StoreDetails() {
   }
 
   return (
-    <section className="settings-page">
-      <div className="settings-heading">
-        <span className="settings-icon" aria-hidden="true">
-          ⚑
-        </span>
+    <div className="pc-page">
+      <div className="pc-hero">
         <div>
-          <p className="kicker">STORE ADMINISTRATION</p>
-          <h1>Store details</h1>
-          <p>Business information used across receipts, reporting and the register.</p>
+          <p className="pc-breadcrumb">
+            Store Workspace <span>/</span> Settings <span>/</span> Store Details
+          </p>
+          <h1 className="pc-title">Store details.</h1>
+          <p className="pc-subtitle">Business information used across receipts, reporting and the register.</p>
+        </div>
+        <div className="pc-actions">
+          <Link className="pc-btn-ghost" to="/settings">
+            ← Back to settings
+          </Link>
         </div>
       </div>
-      <p>
-        <Link to="/settings">← Back to settings</Link>
-      </p>
-      {loading ? (
-        <p className="form-notice" role="status">
-          Loading store details…
-        </p>
-      ) : loadError ? (
-        <p className="form-notice error" role="alert">
-          {loadError}
-        </p>
-      ) : store ? (
-        <form className="invite-form" onSubmit={submit} style={{ maxWidth: 520 }}>
-          <h3>{store.name}</h3>
-          <label>
-            Currency
-            <select name="currency" defaultValue={store.currency}>
-              {CURRENCY_OPTIONS.map(([code, label]) => (
-                <option key={code} value={code}>
-                  {code} — {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Timezone
-            <select name="timezone" defaultValue={store.timezone}>
-              {timezoneOptions().map(zone => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Address <small>(optional)</small>
-            <input name="address" defaultValue={store.address ?? ''} maxLength={240} placeholder="123 Main St, Suite 4" />
-          </label>
-          <label>
-            Country <small>(optional, 2-letter code)</small>
-            <input name="country" defaultValue={store.country ?? ''} maxLength={2} placeholder="US" style={{ textTransform: 'uppercase' }} />
-          </label>
-          {error && (
-            <p className="form-notice error" role="alert">
-              {error}
-            </p>
-          )}
-          {message && (
-            <p className="form-notice" role="status">
-              {message}
-            </p>
-          )}
-          <button className="cta" type="submit" disabled={saving}>
-            {saving ? 'Saving…' : 'Save store details'}
-          </button>
-        </form>
-      ) : null}
-    </section>
+
+      <div className="pc-content" style={{ maxWidth: 640 }}>
+        {loadError && (
+          <div className="pc-alert error" role="alert">
+            <span>{loadError}</span>
+            <button type="button" className="pc-alert-close" onClick={() => setLoadError('')} aria-label="Dismiss">
+              ✕
+            </button>
+          </div>
+        )}
+        {message && (
+          <div className="pc-alert success" role="status">
+            <span>{message}</span>
+            <button type="button" className="pc-alert-close" onClick={() => setMessage('')} aria-label="Dismiss">
+              ✕
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="pc-state" aria-busy="true">
+            <h2>Loading…</h2>
+            <p>Fetching this store's business details.</p>
+          </div>
+        ) : store ? (
+          <form onSubmit={submit}>
+            <div className="pc-group">
+              <p className="pc-group-label">General Information</p>
+              <div className="pc-field">
+                <label htmlFor="sf-name">Store name</label>
+                <input id="sf-name" value={store.name} disabled />
+                <p className="pc-field-hint">Set at store creation — not editable here.</p>
+              </div>
+            </div>
+
+            <div className="pc-group">
+              <p className="pc-group-label">Currency &amp; Timezone</p>
+              <div className="pc-pair">
+                <div className="pc-field">
+                  <label htmlFor="sf-currency">Currency</label>
+                  <select id="sf-currency" name="currency" defaultValue={store.currency}>
+                    {CURRENCY_OPTIONS.map(([code, label]) => (
+                      <option key={code} value={code}>
+                        {code} — {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="pc-field">
+                  <label htmlFor="sf-timezone">Timezone</label>
+                  <select id="sf-timezone" name="timezone" defaultValue={store.timezone}>
+                    {timezoneOptions().map(zone => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="pc-field-hint">Changing currency updates money formatting on this device immediately.</p>
+            </div>
+
+            <div className="pc-group">
+              <p className="pc-group-label">Location</p>
+              <div className="pc-field">
+                <label htmlFor="sf-address">
+                  Address <span className="pc-opt">optional</span>
+                </label>
+                <input id="sf-address" name="address" defaultValue={store.address ?? ''} maxLength={240} placeholder="123 Main St, Suite 4" autoComplete="off" />
+              </div>
+              <div className="pc-field">
+                <label htmlFor="sf-country">
+                  Country <span className="pc-opt">optional, 2-letter code</span>
+                </label>
+                <input
+                  id="sf-country"
+                  name="country"
+                  defaultValue={store.country ?? ''}
+                  maxLength={2}
+                  placeholder="US"
+                  autoComplete="off"
+                  style={{ textTransform: 'uppercase', maxWidth: 120 }}
+                />
+              </div>
+            </div>
+
+            {error && (
+              <div className="pc-alert error" role="alert" style={{ marginTop: 0 }}>
+                <span>{error}</span>
+                <button type="button" className="pc-alert-close" onClick={() => setError('')} aria-label="Dismiss">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <button className="pc-submit" type="submit" disabled={saving} style={{ width: '100%' }}>
+              {saving ? 'Saving…' : 'Save store details'}
+            </button>
+          </form>
+        ) : null}
+      </div>
+    </div>
   )
 }

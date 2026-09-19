@@ -605,6 +605,8 @@
 }
 .pc-field input.err,
 .pc-field select.err { border-color: #b34330; }
+.pc-field input:disabled,
+.pc-field select:disabled { background: #f3ede0; color: #9e8f75; cursor: not-allowed; }
 .pc-field-err { font-size: 11px; color: #702b1e; margin: 0; }
 .pc-field-hint { font-size: 11px; color: #c4b89a; margin: 0; }
 
