@@ -36,7 +36,9 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     return () => { subscription.unsubscribe(); outboxSubscription.unsubscribe() }
   }, [scope.storeId])
   useEffect(() => {
-    if (!scope.storeId) return
+    // CashierPosLayout runs its own reconnect-sync trigger for every /pos/* screen, this one
+    // included — skip this copy in terminal mode so the two don't fire concurrently.
+    if (!scope.storeId || terminal) return
     const sync = async () => {
       try { if (await receiptStore(terminal) === scope.storeId) await pushPendingOrders(scope.storeId, terminal) }
       catch { /* Explicit sync reports errors; background retries preserve the local view. */ }
