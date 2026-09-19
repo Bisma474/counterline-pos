@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { readTerminal, type TerminalCache } from './cache'
+import { currentAccess, readTerminal, type TerminalCache } from './cache'
+import { pushPendingOrders } from '../lib/order-sync'
 import './terminal-auth.css'
 import '../receipts/receipts.css'
 
@@ -17,6 +18,26 @@ export function CashierPosLayout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
   const [terminal, setTerminal] = useState<TerminalCache>()
   useEffect(() => { void readTerminal().then(setTerminal) }, [])
+  // Every /pos/* screen renders inside this shell, so this is the one place that guarantees a
+  // reconnect triggers a sync no matter which screen a cashier is on — e.g. staying on Receipt
+  // after completing a sale, which (like most cashier screens) has no sync trigger of its own.
+  // RegisterScreen/OrderHistoryScreen skip their own equivalent effect when terminal=true, so this
+  // is the only trigger running for cashier screens (owner-mode AppLayout still uses theirs).
+  // Re-reads the device's store id fresh via currentAccess() on every tick rather than closing
+  // over the one-time readTerminal() above, so a device reprovisioned to a different store while
+  // this tab stays open can't push pending orders under a stale store id.
+  useEffect(() => {
+    let active = true
+    const sync = async () => {
+      if (!active || !navigator.onLine) return
+      const access = await currentAccess().catch(() => undefined)
+      if (!active || !access?.policy.valid) return
+      await pushPendingOrders(access.cache.device.store_id, true).catch(() => undefined)
+    }
+    window.addEventListener('online', sync)
+    const interval = window.setInterval(sync, 15_000)
+    return () => { active = false; window.removeEventListener('online', sync); window.clearInterval(interval) }
+  }, [])
   const cashier = terminal?.employees.find(employee => employee.id === terminal.session?.employee_id)
   return <div className="cashier-pos-shell">
     <aside className="cashier-pos-sidebar">

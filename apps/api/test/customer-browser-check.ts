@@ -188,13 +188,10 @@ try {
   const offline = await database.query('select id from public.pos_customers where phone_normalized=$1', ['913001234567'])
   assert.equal(offline.rows.length, 0, 'Offline customer should not have uploaded before reconnect')
   await cashierContext.setOffline(false)
-  // FINDING (see QA_REPORT.md): the Receipt screen and CashierPosLayout have no sync trigger of
-  // their own — only RegisterScreen and OrderHistoryScreen listen for 'online'/poll every 15s.
-  // A cashier who completes a sale (landing on Receipt, per the receipt-first UX) and stays there
-  // while reconnecting will NOT see it sync until they navigate to Sell or Orders. Reloading the
-  // same Receipt page here would hang forever, so this test navigates to Orders, exactly as a
-  // cashier must in real use today to make a stuck-offline sale actually upload.
-  await cashierPage.goto('http://127.0.0.1:3184/pos/orders')
+  // Regression check for the QA_REPORT.md finding: CashierPosLayout now carries its own
+  // 'online'/poll sync trigger, so a cashier who completes a sale (landing on Receipt, per the
+  // receipt-first UX) and stays right there while reconnecting still sees it upload — no manual
+  // navigation to Sell or Orders required, unlike before this fix.
   await expect.poll(async () => (await database.query('select id from public.pos_customers where phone_normalized=$1', ['913001234567'])).rows.length, { timeout: 45_000 }).toBe(1)
   await expect.poll(async () => (await database.query('select id from public.pos_orders where customer_id in (select id from public.pos_customers where phone_normalized=$1)', ['913001234567'])).rows.length, { timeout: 45_000 }).toBe(1)
   const ledger = await database.query<{ entity_type: string }>('select entity_type from public.pos_operation_ledger where store_id=$1 order by accepted_checkpoint', [store])
