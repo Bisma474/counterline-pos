@@ -78,6 +78,23 @@ async function createProduct(req: import('express').Request, res: import('expres
     // categoryId and newCategoryName are mutually exclusive: new_category_name takes precedence
     const useExistingCategoryId = newCategoryName ? null : categoryId
 
+    // Optional: create a new tax rate by name + rate within the same transaction. Stores no
+    // longer get any tax rates at all on creation (202609190002_remove_demo_catalog_seed.sql
+    // dropped the only insert into pos_tax_rates that ever existed, which used to happen as a
+    // side effect of demo-catalog seeding) and there was no other way — UI or API — to create one,
+    // so every store's tax rate dropdown was permanently stuck at "Tax exempt (0%)".
+    const newTaxRateName = body.new_tax_rate_name && typeof body.new_tax_rate_name === 'string'
+      ? body.new_tax_rate_name.trim() : null
+    if (newTaxRateName && newTaxRateName.length > 80) {
+      throw new ApiError(422, 'validation_failed', 'Tax rate name must be 1–80 characters.')
+    }
+    const newTaxRateBps = newTaxRateName ? body.new_tax_rate_rate_bps : undefined
+    if (newTaxRateName && (!Number.isInteger(newTaxRateBps) || (newTaxRateBps as number) < 0 || (newTaxRateBps as number) > 10_000)) {
+      throw new ApiError(422, 'validation_failed', 'new_tax_rate_rate_bps must be an integer between 0 and 10000.')
+    }
+    // taxRateId and newTaxRateName are mutually exclusive: new_tax_rate_name takes precedence
+    const useExistingTaxRateId = newTaxRateName ? null : taxRateId
+
     // Validate price (integer cents)
     const rawPrice = body.unit_price_cents
     if (!Number.isInteger(rawPrice) || (rawPrice as number) < 0 || (rawPrice as number) > 1_000_000_000) {
@@ -128,11 +145,30 @@ async function createProduct(req: import('express').Request, res: import('expres
         if (!chk.rowCount) throw new ApiError(422, 'validation_failed', 'Category does not belong to this store.')
       }
 
-      // Verify tax rate belongs to store
-      if (taxRateId) {
+      // Create new tax rate if requested (inside transaction)
+      let resolvedTaxRateId: string | null = useExistingTaxRateId
+      let createdTaxRate: { id: string; store_id: string; name: string; rate_bps: number; active: boolean } | null = null
+      if (newTaxRateName) {
+        // Unlike pos_categories, pos_tax_rates has no unique(store_id, name) constraint to upsert
+        // against, so a retried/double-clicked submit would otherwise silently create a second
+        // identically-named rate — look for an existing active one with this exact name first.
+        const existingRate = await client.query(
+          'select id, store_id, name, rate_bps, active from public.pos_tax_rates where store_id=$1 and name=$2 and active=true',
+          [storeId, newTaxRateName],
+        )
+        const taxRes = existingRate.rows[0] ? existingRate : await client.query(
+          `insert into public.pos_tax_rates (store_id, name, rate_bps, active)
+           values ($1,$2,$3,true)
+           returning id, store_id, name, rate_bps, active`,
+          [storeId, newTaxRateName, newTaxRateBps],
+        )
+        resolvedTaxRateId = taxRes.rows[0].id as string
+        createdTaxRate = taxRes.rows[0] as { id: string; store_id: string; name: string; rate_bps: number; active: boolean }
+      } else if (useExistingTaxRateId) {
+        // Verify existing tax rate belongs to this store
         const chk = await client.query(
           'select 1 from public.pos_tax_rates where store_id=$1 and id=$2',
-          [storeId, taxRateId],
+          [storeId, useExistingTaxRateId],
         )
         if (!chk.rowCount) throw new ApiError(422, 'validation_failed', 'Tax rate does not belong to this store.')
       }
@@ -154,7 +190,7 @@ async function createProduct(req: import('express').Request, res: import('expres
            values ($1,$2,$3,$4,$5,$6,$7,true,1)
            returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
                      unit_price_cents::text as unit_price_cents, active, revision::text as revision`,
-          [storeId, sku, rawBarcode, name, resolvedCategoryId, taxRateId, priceCents],
+          [storeId, sku, rawBarcode, name, resolvedCategoryId, resolvedTaxRateId, priceCents],
         )
       } catch (insertReason) {
         if (typeof insertReason === 'object' && insertReason !== null && 'code' in insertReason && (insertReason as { code: string }).code === '23505') {
@@ -210,6 +246,7 @@ async function createProduct(req: import('express').Request, res: import('expres
           unit_price_cents: priceCents, active: row.active, revision: 1 },
         stock: { product_id: row.id, current_stock: initialStock },
         ...(createdCategory ? { category: createdCategory } : {}),
+        ...(createdTaxRate ? { taxRate: createdTaxRate } : {}),
         checkpoint: nextPos,
       })
     } catch (reason) {

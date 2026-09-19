@@ -631,6 +631,29 @@
 .pc-newcat:focus { border-color: #cd6048; box-shadow: 3px 3px 0 #e4c276; }
 .pc-newcat.err   { border-color: #b34330; }
 
+/* New tax rate inline inputs (name + percent, side by side) */
+.pc-newtax {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.pc-newtax input {
+  border: 1px solid #d9d0c0;
+  background: #fcf9f0;
+  border-radius: 4px;
+  padding: 11px 13px;
+  font: 13px 'DM Sans', sans-serif;
+  color: #13261e;
+  outline: 0;
+  min-height: 42px;
+  box-sizing: border-box;
+  transition: border-color .14s, box-shadow .14s;
+}
+.pc-newtax input:first-child { flex: 2; }
+.pc-newtax input:last-child { flex: 1; }
+.pc-newtax input:focus { border-color: #cd6048; box-shadow: 3px 3px 0 #e4c276; }
+.pc-newtax input.err   { border-color: #b34330; }
+
 /* Drawer footer */
 .pc-drawer-foot {
   padding: 16px 24px 24px;
