@@ -171,18 +171,5 @@ This pass got a writable service-role key and used it to fix and *actually execu
 
 **Positive findings worth keeping**: integer-cents money end-to-end (schema + Dexie types, §3.3); idempotent operation IDs with a server-side operation ledger, now shown populated correctly by a real executed sync; exponential-backoff retry with a clear rejected/blocked/pending/in-flight/synced state machine surfaced to the UI; RLS now has an explicit policy on every public table (no blanket RLS-off data leak, and no more silent-deny-by-omission either); no service-role key found anywhere under `apps/web` in this session's greps; the offline-then-reconnect-then-correct-dependency-order sync behavior is now proven by a real passing E2E test, not just code reading.
 
-## 8. Fix plan (smallest first)
-
-1. ~~Document (or explicitly policy-gate) the 8 zero-policy RLS tables~~ — **done, merged to `develop`** (migration applied live, guard test added, PR #36).
-2. ~~Fix stock-adjustment rollback on permanent validation failure~~ — **done, merged to `develop`** (fixed + tested, PR #36).
-3. ~~Re-establish a migration ledger~~ — **done, merged to `develop`** (`APPLIED.md` + `verify-migrations.mjs`, PR #36).
-4. ~~Complete traceability for reports, refunds, shifts, and roles~~ — **done** (§4); shifts confirmed as a real scope gap, not a bug.
-5. ~~Fix the Receipt-screen sync-trigger gap~~ — **done, merged to `develop`** (PR #37, §0b).
-6. ~~Fix `reporting-browser-check.ts`~~ — **done, merged to `develop`** (PR #38, §0b).
-7. ~~Run `browser-check.ts`~~ — **done, merged to `develop`** (PR #39, §0b); surfaced a new P2 (§0b-1, unreachable "Lock terminal" control) that is not yet fixed.
-8. **Add the two still-missing Phase 5 scenarios**: replay-the-same-`operation_id`-twice (duplicate protection) and delete-propagation (does this codebase even have a delete path for any of these entities? — check before assuming one needs to be tested). (~2-4 hrs.)
-9. **Fix the unreachable "Lock terminal" control** (new P2, §0b-1): add a visible lock/switch-cashier action reachable from `CashierPosLayout.tsx`, or reconsider `CashierLogin`'s auto-redirect trigger. (~1-2 hrs incl. a regression test.)
-10. Decide whether/when to merge `feat/store-settings-and-catalog-extensions` (the refunds branch) into `develop` — a product/release-planning decision, not a code fix.
-
----
+#
 *Redaction note: all `.env`/`.env.local` values (DATABASE_URL, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY, the QA test user's password, etc.) were read only to establish connections and perform the actions described above; none are reproduced anywhere in this report.*
