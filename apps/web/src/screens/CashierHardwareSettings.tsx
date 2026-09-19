@@ -6,6 +6,7 @@
  * no device list, no "manage employees" or "terminal provisioning" links.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { liveQuery } from 'dexie'
 import { DAY } from '../terminal-auth/policy'
 import { browserCapabilities, type BrowserCapabilities, type ShellStatus, type StorageStatus, type TerminalIdentity } from '../terminal-auth/hardware/browserCapabilities'
@@ -96,6 +97,10 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
         <div><dt>Signed in as</dt><dd>{terminal.cashierName ?? 'Terminal locked'}</dd></div>
       </dl>}
       {(expired || clockInvalid) && <p role="alert" className="form-notice error">{expired ? 'Offline authorization has expired. Connect and open cashier sign in to refresh terminal access.' : 'This device’s clock moved backwards. Connect and refresh terminal access.'}</p>}
+    </section>
+    <section className="admin-panel hardware-panel" aria-labelledby="sync-center-heading">
+      <div className="hardware-title"><div><h2 id="sync-center-heading">Sync center</h2><p>Review queued and rejected sales for this terminal.</p></div>
+        <Link className="secondary-cta" to="/pos/sync">Open sync center</Link></div>
     </section>
     <div className="hardware-grid">
       <StorageSettings status={snapshot?.storage} adapter={adapter} onChanged={() => void inspect()} />
