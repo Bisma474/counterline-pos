@@ -1,10 +1,10 @@
 # Counterline POS — QA / Architecture Report
 
-Generated 2026-09-19, updated 2026-09-19 on branch `fix/qa-report-findings` (off `develop`, not yet committed/pushed). Scope: repo + live DB reached via `apps/api/.env`/`.env.local` `DATABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. This update ran real DDL (one additive migration, applied and verified) and created one real test user + store, in addition to further read-only queries. Secrets are never printed below.
+Generated 2026-09-19, updated 2026-09-19. All fixes described below are **merged into `develop`** via [PR #36](https://github.com/Bisma474/counterline-pos/pull/36) (branch `fix/qa-report-findings`, merged `2026-09-19T09:27:19Z`). Scope: repo + live DB reached via `apps/api/.env`/`.env.local` `DATABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. This update ran real DDL (one additive migration, applied and verified) and created one real test user + store, in addition to further read-only queries. Secrets are never printed below.
 
-## 0. Changes made in this follow-up pass
+## 0. Changes made in this follow-up pass — MERGED
 
-All work is uncommitted on `fix/qa-report-findings`, pending review.
+All 6 commits below landed on `develop` via PR #36 and were re-verified against `develop`'s tip post-merge: `git pull origin develop` fast-forwarded cleanly (no conflicts), `apps/api/scripts/verify-migrations.mjs` re-confirmed all 15 migrations against the live schema, and `apps/web`'s test suite re-ran green (20/20 — one pair of near-duplicate tests flagged in code review was consolidated into one before merge, hence 20 rather than the 21 first reported).
 
 1. **P1 fixed & verified live**: added `supabase/migrations/202609200001_service_role_only_rls_policies.sql` (explicit deny-all policies for `anon`/`authenticated` on the 8 previously-zero-policy tables) and applied it to the live DB via `apps/api/scripts/apply-migration.mjs`; confirmed all 8 policies exist with a live `pg_policies` query. Added `apps/web/tests/service-role-only-tables.test.ts`, a grep-based guard test that fails the build if `apps/web/src` ever calls `.from()` on any of those 8 table names (currently zero, confirmed).
 2. **P2 fixed & tested**: `apps/web/src/lib/order-sync-core.ts`'s `finish()` now deletes an order's `stock_adjustments` rows when its outbox entry permanently fails validation, instead of leaving a phantom stock deduction that checkpoint-based cleanup could never reach (it required a truthy `accepted_checkpoint`, which a rejected sale never gets). Added a new unit test (`apps/web/tests/checkout.test.ts`) proving the rollback; updated one pre-existing test whose assertion described the old (buggy) behavior. All 21 tests in `apps/web`'s suite pass (`npm test` in `apps/web`).
@@ -157,9 +157,9 @@ This pass got a writable service-role key and used it to fix and *actually execu
 
 ## 8. Fix plan (smallest first)
 
-1. ~~Document (or explicitly policy-gate) the 8 zero-policy RLS tables~~ — **done** (migration applied live, guard test added).
-2. ~~Fix stock-adjustment rollback on permanent validation failure~~ — **done** (fixed + tested).
-3. ~~Re-establish a migration ledger~~ — **done** (`APPLIED.md` + `verify-migrations.mjs`).
+1. ~~Document (or explicitly policy-gate) the 8 zero-policy RLS tables~~ — **done, merged to `develop`** (migration applied live, guard test added, PR #36).
+2. ~~Fix stock-adjustment rollback on permanent validation failure~~ — **done, merged to `develop`** (fixed + tested, PR #36).
+3. ~~Re-establish a migration ledger~~ — **done, merged to `develop`** (`APPLIED.md` + `verify-migrations.mjs`, PR #36).
 4. ~~Complete traceability for reports, refunds, shifts, and roles~~ — **done** (§4); shifts confirmed as a real scope gap, not a bug.
 5. **Fix the Receipt-screen sync-trigger gap** (new P2, §7): add an `online`-listener + interval sync call reachable from every cashier screen, not just Register and Orders. (~1-2 hrs incl. a regression test.)
 6. **Fix `reporting-browser-check.ts`**: mount a real `/api` route (or an explicit mock) for `/api/reports/...` in that fixture, the same way `catalog-browser-check.ts` already does, so the client-rendered dashboard gets real E2E proof instead of stopping partway. (~1-2 hrs.)
