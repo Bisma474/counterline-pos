@@ -35,11 +35,12 @@ function Button({ children, to, disabled = false, type = 'button', onClick }: { 
 // ── Session Context ──────────────────────────────────────────────────────────
 // Resolved ONCE at the root so navigating between protected routes never
 // triggers "Checking your session…" again.
-const SessionCtx = createContext<{ loading: boolean; session: Session | null; needsOnboarding: boolean; markOnboardingComplete: () => void }>({ loading: true, session: null, needsOnboarding: false, markOnboardingComplete: () => {} })
+const SessionCtx = createContext<{ loading: boolean; session: Session | null; needsOnboarding: boolean; onboardingLoading: boolean; markOnboardingComplete: () => void }>({ loading: true, session: null, needsOnboarding: false, onboardingLoading: false, markOnboardingComplete: () => {} })
 function SessionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(Boolean(supabase))
   const [session, setSession] = useState<Session | null>(null)
   const [needsOnboarding, setNeedsOnboarding] = useState(false)
+  const [onboardingLoading, setOnboardingLoading] = useState(false)
   useEffect(() => {
     if (!supabase) { setLoading(false); return }
     let active = true
@@ -48,8 +49,11 @@ function SessionProvider({ children }: { children: ReactNode }) {
     return () => { active = false; listener.subscription.unsubscribe() }
   }, [])
   useEffect(() => {
-    if (!session || !supabase) { setNeedsOnboarding(false); return }
+    if (!session || !supabase) { setNeedsOnboarding(false); setOnboardingLoading(false); return }
     let active = true
+    setOnboardingLoading(true)
+    // Signup/finishStoreSetup races this check while the store is still being created; routes must
+    // wait for onboardingLoading to clear instead of redirecting on the stale default of false.
     void supabase.from('store_memberships').select('store_id, role').eq('user_id', session.user.id).eq('active', true).eq('role', 'owner').limit(1)
       .then(async ({ data: memberships }) => {
         const storeId = memberships?.[0]?.store_id
@@ -59,17 +63,18 @@ function SessionProvider({ children }: { children: ReactNode }) {
       })
       // A failed check never blocks an existing session from reaching the app.
       .then(result => { if (active) setNeedsOnboarding(Boolean(result)) }, () => { if (active) setNeedsOnboarding(false) })
+      .then(() => { if (active) setOnboardingLoading(false) })
     return () => { active = false }
   }, [session])
   // The wizard calls this right after the completion RPC succeeds, so ProtectedRoute
   // stops redirecting to /onboarding without waiting on a re-fetch of store state.
   const markOnboardingComplete = () => setNeedsOnboarding(false)
-  return <SessionCtx.Provider value={{ loading, session, needsOnboarding, markOnboardingComplete }}>{children}</SessionCtx.Provider>
+  return <SessionCtx.Provider value={{ loading, session, needsOnboarding, onboardingLoading, markOnboardingComplete }}>{children}</SessionCtx.Provider>
 }
 export function useSession() { return useContext(SessionCtx) }
 function AuthPending() { return <main className="route-pending" role="status">Loading…</main> }
-function ProtectedRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding } = useSession(); const location = useLocation(); if (loading) return <AuthPending />; if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />; if (needsOnboarding && location.pathname !== '/onboarding') return <Navigate to="/onboarding" replace />; return <>{children}</> }
-function PublicRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding } = useSession(); if (loading) return <AuthPending />; return session ? <Navigate to={needsOnboarding ? '/onboarding' : '/dashboard'} replace /> : <>{children}</> }
+function ProtectedRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding, onboardingLoading } = useSession(); const location = useLocation(); if (loading) return <AuthPending />; if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />; if (location.pathname !== '/onboarding' && onboardingLoading) return <AuthPending />; if (needsOnboarding && location.pathname !== '/onboarding') return <Navigate to="/onboarding" replace />; return <>{children}</> }
+function PublicRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding, onboardingLoading } = useSession(); if (loading) return <AuthPending />; if (session && onboardingLoading) return <AuthPending />; return session ? <Navigate to={needsOnboarding ? '/onboarding' : '/dashboard'} replace /> : <>{children}</> }
 
 function Landing() { return <div className="landing"><header className="site-header"><Brand /><nav aria-label="Marketing"><a href="#product">Product</a><a href="#features">Features</a><a href="#retailers">Retailers</a><a href="#pricing">Pricing</a><a href="#resources">Resources</a></nav><div className="header-actions"><Link to="/login">Sign in</Link><Button to="/signup">Open your store</Button></div></header><section className="hero" id="product"><div className="hero-copy"><p className="kicker">OFFLINE-FIRST POS FOR INDEPENDENT RETAILERS</p><h1>Keep the<br /><i>counter</i> moving.</h1><span className="brush" /><p className="hero-text">Counterline gives independent retailers a register that stays clear, calm, and ready to sell — online or offline.</p><div className="hero-actions"><Button to="/signup">Open your store</Button><a className="watch" href="#features"><span aria-hidden="true">▷</span> See how it works</a></div></div><div className="hero-art" aria-hidden="true"><div className="sunbeam" /><div className="monitor"><RegisterMini /></div></div></section><section id="features" className="feature-strip"><div className="strip-quote">Independent<br />Retail<br />Stronger<br />Together.</div>{[['♙', 'Sell anywhere', 'Works online and offline.'], ['♧', 'Simple for your team', 'Easy to learn. Easy to run.'], ['⬡', 'Your data, your control', 'Secure and transparent.'], ['⌁', 'Built for what’s next', 'Scale as you grow.']].map(([icon, title, copy]) => <article key={title}><span aria-hidden="true">{icon}</span><strong>{title}</strong><small>{copy}</small></article>)}</section>{[['retailers', 'Made for independent retail.', 'One calm counter experience for the people who run the store.'], ['pricing', 'Simple to start.', 'Set up your owner account and invite your team.'], ['resources', 'Support when you need it.', 'Account recovery and store access guidance are built in.']].map(([id, title, text]) => <section id={id} className="landing-note" key={id}><h2>{title}</h2><p>{text}</p></section>)}<footer><Brand dark /><span>MORE THAN A POS. A PARTNER IN THE EVERYDAY.</span><Button to="/signup">Start for free</Button></footer></div> }
 function RegisterMini() { return <div className="mini-register"><aside><b>Counterline</b><span>▣ &nbsp; Sell</span><span>▦ &nbsp; Products</span><span>▤ &nbsp; Orders</span></aside><div className="mini-products"><div className="mini-search">⌕ &nbsp; Search products or scan barcode…</div><div className="mini-grid">{products.map(([name, , stock, art]) => <div className="mini-card" key={name}><div className={`product-art ${art}`} /><b>{name}</b><small>{stock}</small></div>)}</div></div><div className="mini-cart"><p>Current Sale</p><div>Ceramic Mug <b>$18.00</b></div><hr /><strong>Total <b>$18.00</b></strong></div></div> }
