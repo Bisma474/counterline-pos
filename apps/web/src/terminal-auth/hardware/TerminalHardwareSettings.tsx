@@ -4,8 +4,6 @@ import type { ManagedDevice } from '../types'
 import { DAY } from '../policy'
 import { browserCapabilities, type BrowserCapabilities, type ShellStatus, type StorageStatus, type TerminalIdentity } from './browserCapabilities'
 import { StorageSettings } from './StorageSettings'
-import { ScannerTest } from './ScannerTest'
-import { PrinterTest } from './PrinterTest'
 import './hardware.css'
 
 interface Snapshot {
@@ -83,7 +81,7 @@ export function TerminalHardwareSettings({ storeId, storeName, devices, adapter 
       </dl> : snapshot && !snapshot.identityUnavailable && <p>{otherStore ? 'This browser is provisioned for a different store. Select that store to inspect its terminal identity.' : 'This browser has no terminal identity for this store. Use “Set up this browser” below while online.'}</p>}
       <div className="hardware-actions"><Link className="secondary-cta" to="/settings/employees">Manage cashier employees</Link><Link className="secondary-cta" to="/pos/login">Open cashier sign in</Link><a className="text-button" href="#terminal-browser-setup">Go to terminal provisioning</a></div>
     </section>
-    <div className="hardware-grid"><StorageSettings status={snapshot?.storage} adapter={adapter} onChanged={() => void inspect()} /><ScannerTest now={adapter.now} /><PrinterTest terminal={terminal} storeName={storeName} adapter={adapter} />
+    <div className="hardware-grid"><StorageSettings status={snapshot?.storage} adapter={adapter} onChanged={() => void inspect()} />
       <section className="admin-panel hardware-panel" aria-labelledby="hardware-recovery-heading">
         <h2 id="hardware-recovery-heading">Recovery guidance</h2>
         <ul className="hardware-recovery">
@@ -92,7 +90,6 @@ export function TerminalHardwareSettings({ storeId, storeName, devices, adapter 
           <li><strong>Storage unsupported, denied or full:</strong> use a supported browser and ask your manager about recovery and backups. Do not clear site data to troubleshoot. Persistent storage is not a backup.</li>
           <li><strong>Before reprovisioning:</strong> preserve existing browser data and resolve or back up any unsynced sales through the approved recovery process. Reprovisioning creates a new device identity and receipt prefix; it does not restore unsynced sales. Storage loss can permanently destroy them.</li>
         </ul>
-        <p>Scanner and printer tests do not create orders, payments, stock movements, receipt sequences or synchronization operations. Real sale receipts will be connected after checkout integration.</p>
       </section>
     </div>
   </div>
