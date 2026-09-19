@@ -100,6 +100,11 @@ async function finish(entry: OutboxEntry, accepted: boolean, code: string | null
       // scoped per store since one browser's IndexedDB can hold data for a device that
       // moved between stores after reprovisioning.
       await posDb.sync_metadata.put({ key: `last_synced_at:${current.store_id}`, value: new Date().toISOString() })
+    } else if (failureKind === 'validation') {
+      // A permanently-rejected sale never gets an accepted_checkpoint, so loadCatalog's
+      // checkpoint-based cleanup (catalog.ts) would never purge its optimistic stock delta.
+      // Roll it back explicitly so displayed stock doesn't drift from a sale that never happened.
+      await posDb.stock_adjustments.where('operation_id').equals(entry.operation_id).delete()
     }
   })
 }
