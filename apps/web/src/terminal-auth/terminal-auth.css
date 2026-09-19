@@ -53,3 +53,11 @@
 .manager-approval-head h1 { margin: 2px 0 0; font-size: 26px; letter-spacing: -.03em; }
 .manager-approval-reason { color: #667085; font-size: 13px; line-height: 1.5; margin: 6px 0 18px; }
 @media (max-width: 480px) { .manager-approval-dialog { padding: 22px 18px; } .manager-approval-head h1 { font-size: 23px; } }
+
+.onboarding-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; position: relative; z-index: 1; font: 500 13px 'DM Mono'; letter-spacing: .04em; color: #9fab9d; }
+.onboarding-steps li { display: flex; align-items: center; gap: 14px; }
+.onboarding-steps span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid #4c6a55; font-size: 12px; flex-shrink: 0; }
+.onboarding-steps li.active { color: #f3eadb; }
+.onboarding-steps li.active span { border-color: var(--gold); color: var(--gold); }
+.onboarding-steps li.done { color: #d3d5c9; }
+.onboarding-steps li.done span { background: var(--gold); border-color: var(--gold); color: var(--pine); }
