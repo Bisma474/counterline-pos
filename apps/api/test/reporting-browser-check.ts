@@ -20,6 +20,10 @@ identity.options('/{*path}', (_req, res) => { res.sendStatus(204) })
 identity.use((req, res, next) => { if (req.headers.authorization !== `Bearer ${accessToken}`) { res.sendStatus(401); return }; next() })
 identity.get('/auth/v1/user', (_req, res) => { res.json(user) })
 identity.get('/rest/v1/store_memberships', (_req, res) => { res.json([{ store_id: store, role: membershipRole }]) })
+// App.tsx's onboarding-status check (202609190001_store_onboarding_status.sql) reads this
+// directly via the Supabase client, so the fixture must answer it or every route falls into the
+// "Something needs your attention" store-load-failure screen. .single() expects a bare object.
+identity.get('/rest/v1/stores', (_req, res) => { res.json({ id: store, onboarding_completed_at: now.toISOString() }) })
 const identityServer = identity.listen(3199, '127.0.0.1')
 const web = express()
 web.use(express.static(root + 'apps/web/dist'))

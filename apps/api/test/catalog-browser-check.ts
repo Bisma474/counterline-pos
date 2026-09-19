@@ -55,6 +55,11 @@ identity.use((req, res, next) => { if (req.headers.authorization !== `Bearer ${t
 identity.get('/auth/v1/user', (_req, res) => { res.json(user) })
 identity.get('/rest/v1/store_memberships', (_req, res) => { res.json([{ store_id: store, role: 'owner', user_id: owner, active: true, joined_at: new Date().toISOString() }]) })
 identity.get('/rest/v1/profiles', (_req, res) => { res.json([{ id: owner, full_name: 'Fixture Owner' }]) })
+// App.tsx's onboarding-status check (202609190001_store_onboarding_status.sql) reads this
+// directly via the Supabase client, so the fixture must answer it or every route falls into the
+// "Something needs your attention" store-load-failure screen.
+// .single() calls expect a bare object in the response body, not an array wrapping one.
+identity.get('/rest/v1/stores', (_req, res) => { res.json({ id: store, onboarding_completed_at: new Date().toISOString() }) })
 const identityServer = identity.listen(3189, '127.0.0.1')
 const web = express()
 web.use('/api', createApp({ pool: db, origin: 'http://127.0.0.1:3188', supabaseUrl: 'http://127.0.0.1:3189', supabaseKey: 'fixture', secureCookies: false }))
