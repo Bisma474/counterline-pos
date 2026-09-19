@@ -2,16 +2,15 @@
  * CashierHardwareSettings — /pos/settings
  * Cashier-facing terminal hardware & storage checks (FEAT-SET-01), reusing the
  * same components mounted under owner/manager ManagerSetup.tsx (browser
- * storage, HID scanner test, 80mm printer test). No owner-only actions:
- * no device list, no "manage employees" or "terminal provisioning" links.
+ * storage). No owner-only actions: no device list, no "manage employees" or
+ * "terminal provisioning" links.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { liveQuery } from 'dexie'
 import { DAY } from '../terminal-auth/policy'
 import { browserCapabilities, type BrowserCapabilities, type ShellStatus, type StorageStatus, type TerminalIdentity } from '../terminal-auth/hardware/browserCapabilities'
 import { StorageSettings } from '../terminal-auth/hardware/StorageSettings'
-import { ScannerTest } from '../terminal-auth/hardware/ScannerTest'
-import { PrinterTest } from '../terminal-auth/hardware/PrinterTest'
 import { posDb } from '../lib/db'
 import '../terminal-auth/hardware/hardware.css'
 
@@ -97,10 +96,12 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
       </dl>}
       {(expired || clockInvalid) && <p role="alert" className="form-notice error">{expired ? 'Offline authorization has expired. Connect and open cashier sign in to refresh terminal access.' : 'This device’s clock moved backwards. Connect and refresh terminal access.'}</p>}
     </section>
+    <section className="admin-panel hardware-panel" aria-labelledby="sync-center-heading">
+      <div className="hardware-title"><div><h2 id="sync-center-heading">Sync center</h2><p>Review queued and rejected sales for this terminal.</p></div>
+        <Link className="secondary-cta" to="/pos/sync">Open sync center</Link></div>
+    </section>
     <div className="hardware-grid">
       <StorageSettings status={snapshot?.storage} adapter={adapter} onChanged={() => void inspect()} />
-      <ScannerTest now={adapter.now} />
-      <PrinterTest terminal={terminal} storeName={storeName} adapter={adapter} />
       <section className="admin-panel hardware-panel" aria-labelledby="hardware-recovery-heading">
         <h2 id="hardware-recovery-heading">Recovery guidance</h2>
         <ul className="hardware-recovery">
@@ -108,7 +109,6 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
           <li><strong>Authorization expired or clock changed:</strong> connect and use Refresh terminal access at sign in. If access still fails, ask a manager to provision this device again.</li>
           <li><strong>Storage unsupported, denied or full:</strong> use a supported browser and tell your manager. Do not clear site data to troubleshoot — persistent storage is not a backup.</li>
         </ul>
-        <p>Scanner and printer tests here do not create orders, payments, stock movements, receipt sequences or synchronization operations.</p>
       </section>
     </div>
   </div>
