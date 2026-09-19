@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useSession } from '../App'
 import { requireSupabase } from '../lib/supabase'
 import { loadCatalog } from '../lib/catalog'
 import { provisionTerminal } from '../terminal-auth/cache'
@@ -12,6 +13,7 @@ const STEPS = ['Store profile', 'Terminal', 'Staff'] as const
 
 export function OnboardingWizard() {
   const go = useNavigate()
+  const { markOnboardingComplete } = useSession()
   const [step, setStep] = useState(0)
   const [store, setStore] = useState<Store>()
   const [loading, setLoading] = useState(true)
@@ -79,10 +81,12 @@ export function OnboardingWizard() {
     const form = new FormData(event.currentTarget)
     setBusy(true); setError('')
     try {
-      await request('/terminal-auth/employees', { store_id: store.id, name: String(form.get('name')).trim(), role: 'cashier', active: true, pin: String(form.get('pin') ?? '') }, true)
+      try {
+        await request('/terminal-auth/employees', { store_id: store.id, name: String(form.get('name')).trim(), role: 'cashier', active: true, pin: String(form.get('pin') ?? '') }, true)
+      } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to add this employee.'); return }
       setStaffDone(true)
       await finish()
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to add this employee.') }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'The employee was added, but setup could not be finished. Try again.') }
     finally { setBusy(false) }
   }
 
@@ -92,6 +96,7 @@ export function OnboardingWizard() {
     const { error: completeError } = await client.rpc('complete_store_onboarding', { p_store_id: store.id })
     if (completeError) throw completeError
     await loadCatalog(store.id).catch(() => undefined)
+    markOnboardingComplete()
     go('/dashboard', { replace: true })
   }
 

@@ -35,7 +35,7 @@ function Button({ children, to, disabled = false, type = 'button', onClick }: { 
 // ── Session Context ──────────────────────────────────────────────────────────
 // Resolved ONCE at the root so navigating between protected routes never
 // triggers "Checking your session…" again.
-const SessionCtx = createContext<{ loading: boolean; session: Session | null; needsOnboarding: boolean }>({ loading: true, session: null, needsOnboarding: false })
+const SessionCtx = createContext<{ loading: boolean; session: Session | null; needsOnboarding: boolean; markOnboardingComplete: () => void }>({ loading: true, session: null, needsOnboarding: false, markOnboardingComplete: () => {} })
 function SessionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(Boolean(supabase))
   const [session, setSession] = useState<Session | null>(null)
@@ -61,9 +61,12 @@ function SessionProvider({ children }: { children: ReactNode }) {
       .then(result => { if (active) setNeedsOnboarding(Boolean(result)) }, () => { if (active) setNeedsOnboarding(false) })
     return () => { active = false }
   }, [session])
-  return <SessionCtx.Provider value={{ loading, session, needsOnboarding }}>{children}</SessionCtx.Provider>
+  // The wizard calls this right after the completion RPC succeeds, so ProtectedRoute
+  // stops redirecting to /onboarding without waiting on a re-fetch of store state.
+  const markOnboardingComplete = () => setNeedsOnboarding(false)
+  return <SessionCtx.Provider value={{ loading, session, needsOnboarding, markOnboardingComplete }}>{children}</SessionCtx.Provider>
 }
-function useSession() { return useContext(SessionCtx) }
+export function useSession() { return useContext(SessionCtx) }
 function AuthPending() { return <main className="route-pending" role="status">Loading…</main> }
 function ProtectedRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding } = useSession(); const location = useLocation(); if (loading) return <AuthPending />; if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />; if (needsOnboarding && location.pathname !== '/onboarding') return <Navigate to="/onboarding" replace />; return <>{children}</> }
 function PublicRoute({ children }: { children: ReactNode }) { const { loading, session, needsOnboarding } = useSession(); if (loading) return <AuthPending />; return session ? <Navigate to={needsOnboarding ? '/onboarding' : '/dashboard'} replace /> : <>{children}</> }
