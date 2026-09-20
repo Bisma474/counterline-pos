@@ -19,10 +19,11 @@ test('cash checkout commits the receipt, sale, payment, stock overlay and outbox
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
-  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null)
+  const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, null, 'employee-1')
   assert.match(sale.receiptNumber, /^LOCAL-[0-9A-F-]{36}-000001$/)
   const order = await posDb.orders.get(sale.operationId)
   assert.equal(order?.total_cents, 418)
+  assert.equal(order?.employee_id, 'employee-1')
   assert.equal((await posDb.order_items.where('order_id').equals(sale.operationId).toArray()).length, 1)
   assert.equal((await posDb.payments.where('order_id').equals(sale.operationId).first())?.change_cents, 82)
   assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.delta, -2)
@@ -79,19 +80,23 @@ test('accepted push marks the order and outbox synced and covers local stock exa
   await posDb.delete()
 })
 
-test('rejected push preserves the paid sale and uncovered stock for review', async () => {
+test('rejected push preserves the paid sale for review but rolls back its stock delta', async () => {
   await posDb.delete()
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null)
+  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.delta, -2)
   const send = async () => ({ ok: false, status: 422, body: { code: 'total_mismatch', message: 'Sale needs review.' } })
   assert.equal(await pushOrdersForStore(storeId, send), 0)
   assert.equal((await posDb.orders.get(sale.operationId))?.sync_status, 'failed')
   const outbox = await posDb.outbox.where('operation_id').equals(sale.operationId).first()
   assert.equal(outbox?.failure_kind, 'validation')
   assert.equal(outbox?.reason_code, 'total_mismatch')
-  assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.accepted_checkpoint, null)
+  // A validation failure never gets an accepted_checkpoint, so loadCatalog's checkpoint-based
+  // cleanup (catalog.ts) would otherwise never purge this stock delta, leaving displayed stock
+  // permanently short by the rejected sale's quantity. It must be rolled back immediately instead.
+  assert.equal(await posDb.stock_adjustments.get([sale.operationId, productId]), undefined)
   await retryOrderForStore(sale.operationId, storeId, send)
   assert.equal((await posDb.outbox.where('operation_id').equals(sale.operationId).first())?.attempt_count, 1)
   await posDb.delete()
@@ -186,7 +191,7 @@ test('a discount above 20% is refused without manager evidence and accepted with
   const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 2_500 } }]
   await assert.rejects(completeLocalSale(discounted, storeId, 'cash', 500, null), /manager approval/)
   assert.equal(await posDb.orders.count(), 0)
-  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null, null, { managerId: 'manager-1', approvedAt: '2026-09-17T10:00:00.000Z' })
+  const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null, null, null, { managerId: 'manager-1', approvedAt: '2026-09-17T10:00:00.000Z' })
   const order = await posDb.orders.get(sale.operationId)
   assert.equal(order?.manager_id, 'manager-1')
   assert.equal(order?.manager_approved_at, '2026-09-17T10:00:00.000Z')

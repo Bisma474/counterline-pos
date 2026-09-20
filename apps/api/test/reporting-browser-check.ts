@@ -12,7 +12,11 @@ const owner = '20000000-0000-4000-8000-000000000001'
 const now = new Date()
 const accessToken = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: owner, exp: Math.floor(Date.now() / 1000) + 3600, role: 'authenticated' })).toString('base64url')}.test`
 const user = { id: owner, aud: 'authenticated', role: 'authenticated', email: 'owner@example.test', app_metadata: {}, user_metadata: {}, created_at: now.toISOString() }
-let membershipRole: 'owner' | 'manager' = 'owner'
+// 'owner' and 'manager' both get full reporting access (management-access.ts); 'cashier' is the
+// negative case this fixture switches to below to prove the "Reporting unavailable" gate — it used
+// to switch to 'manager' for that, which broke the moment manager access was deliberately relaxed
+// to match owner (commit 28517d6) and this fixture was never updated to match.
+let membershipRole: 'owner' | 'manager' | 'cashier' = 'owner'
 
 const identity = express()
 identity.use((req, res, next) => { res.set({ 'Access-Control-Allow-Origin': 'http://127.0.0.1:3198', 'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] ?? 'authorization,apikey,content-type,x-client-info,x-supabase-api-version', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' }); next() })
@@ -20,8 +24,25 @@ identity.options('/{*path}', (_req, res) => { res.sendStatus(204) })
 identity.use((req, res, next) => { if (req.headers.authorization !== `Bearer ${accessToken}`) { res.sendStatus(401); return }; next() })
 identity.get('/auth/v1/user', (_req, res) => { res.json(user) })
 identity.get('/rest/v1/store_memberships', (_req, res) => { res.json([{ store_id: store, role: membershipRole }]) })
+// App.tsx's onboarding-status check (202609190001_store_onboarding_status.sql) reads this
+// directly via the Supabase client, so the fixture must answer it or every route falls into the
+// "Something needs your attention" store-load-failure screen. .single() expects a bare object.
+identity.get('/rest/v1/stores', (_req, res) => { res.json({ id: store, onboarding_completed_at: now.toISOString() }) })
 const identityServer = identity.listen(3199, '127.0.0.1')
 const web = express()
+// Explicit mocks for the server-only report endpoints (no local-Dexie equivalent, per the code
+// comments in ReportingScreens.tsx) — this fixture has no real Postgres/API backend at all, so
+// before these existed, isApiReachable()'s /health probe was "reachable" only by accident (the
+// catch-all below answers any path with 200 + the SPA's HTML), and the "Sales by cashier" panel's
+// fetch of this JSON endpoint got that HTML back and failed to parse it. Deliberately NOT mocking
+// /reports/daily-summary: useFinancialReport already falls back to the local Dexie calculation on
+// any fetch/parse failure, which is what this fixture's $15.90 assertion below depends on — mocking
+// it would replace that local math with these canned numbers instead of proving it.
+web.get('/api/health', (_req, res) => { res.json({ ok: true }) })
+web.get('/api/reports/orders', (_req, res) => {
+  res.json({ orders: [{ id: 'server-order-1', receiptNumber: 'FC-000099', time: now.toISOString(), totalCents: 875, paymentMethod: 'cash', itemCount: 1, syncStatus: 'synced', employeeId: 'employee-1', cashierName: 'Casey Cashier' }], next_cursor: null })
+})
+web.get('/api/reports/oversold', (_req, res) => { res.json({ products: [] }) })
 web.use(express.static(root + 'apps/web/dist'))
 web.get('/{*path}', (_req, res) => { res.sendFile(root + 'apps/web/dist/index.html') })
 const webServer = web.listen(3198, '127.0.0.1')
@@ -78,6 +99,11 @@ try {
   await page.getByRole('link', { name: 'Reports' }).click()
   await expect(page.getByRole('heading', { name: 'Daily sales report.' })).toBeVisible()
   await expect(page.getByText('$15.90', { exact: true })).toBeVisible()
+  // Cross-device cashier attribution, sourced from the mocked GET /api/reports/orders above —
+  // proves the panel renders real JSON data instead of the JSON-parse-error state it hit before.
+  await expect(page.getByRole('heading', { name: 'Sales by cashier' })).toBeVisible()
+  await expect(page.getByText('Casey Cashier')).toBeVisible()
+  await expect(page.getByText('$8.75', { exact: true })).toBeVisible()
   for (const width of [1440, 390, 375, 768]) {
     await page.setViewportSize({ width, height: 1000 }); const reportWidth = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth })); assert(reportWidth.scroll <= reportWidth.inner, `Owner reports overflow at ${width}px: ${JSON.stringify(reportWidth)}`)
     if (width === 1440 || width === 390) await page.screenshot({ path: `${screenshots}owner-reports-${width}.png`, fullPage: true })
@@ -87,7 +113,7 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Daily sales report.' })).toBeVisible()
   await context.setOffline(false)
-  membershipRole = 'manager'
+  membershipRole = 'cashier'
   await page.goto('http://127.0.0.1:3198/reports', { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Reporting unavailable' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Reports' })).toHaveCount(0)
@@ -103,7 +129,7 @@ try {
     await new Promise((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error) }); database.close()
   })()`)
   await page.goto('http://127.0.0.1:3198/pos/dashboard', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: 'Ready for the counter.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hello, Alex Rivera.' })).toBeVisible()
   await expect(page.getByText('Today’s recorded sales')).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Reports' })).toHaveCount(0)
   for (const width of [1440, 390, 375, 768]) {
@@ -112,7 +138,7 @@ try {
   }
   await context.setOffline(true)
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: 'Ready for the counter.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hello, Alex Rivera.' })).toBeVisible()
   await context.setOffline(false)
   await page.goto('http://127.0.0.1:3198/pos/reports')
   await expect(page).toHaveURL('http://127.0.0.1:3198/pos/dashboard')

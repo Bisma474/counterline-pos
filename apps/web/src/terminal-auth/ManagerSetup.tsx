@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom'
 import { AppLayout } from '../App'
 import { requireSupabase } from '../lib/supabase'
 import { request } from './api'
-import { saveProjection, withTerminalLock } from './cache'
-import type { ManagedEmployee, Management, Projection } from './types'
+import { provisionTerminal } from './cache'
+import type { ManagedEmployee, Management } from './types'
 import './terminal-auth.css'
 import { TerminalHardwareSettings } from './hardware/TerminalHardwareSettings'
 
@@ -53,10 +53,7 @@ export function ManagerSetup({ screen }: { screen: 'terminals' | 'employees' }) 
     setBusy(true); setError(''); setMessage('')
     try {
       if (screen === 'terminals') {
-        await withTerminalLock(async () => {
-          const projection = await request<Projection>('/devices/provision', { store_id: storeId, name: String(values.get('name')).trim() }, true)
-          await saveProjection(projection)
-        })
+        await provisionTerminal(storeId, String(values.get('name')).trim())
         setMessage('This browser is provisioned. Open cashier sign in to unlock the terminal.')
       } else {
         await request('/terminal-auth/employees', { store_id: storeId, id: editing?.id, name: String(values.get('name')).trim(), role: values.get('role'), active: values.get('active') === 'on', pin: String(values.get('pin') ?? '') }, true)

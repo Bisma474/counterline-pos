@@ -20,6 +20,10 @@ test('focused migration and terminal HTTP lifecycle on embedded PostgreSQL', asy
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609150001_terminal_employee_access.sql', import.meta.url), 'utf8'))
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609150002_terminal_device_sessions.sql', import.meta.url), 'utf8'))
   await db.exec(await readFile(new URL('../../../supabase/migrations/202609180001_terminal_name_uniqueness.sql', import.meta.url), 'utf8'))
+  // terminal-auth/routes.ts writes an audit_log row on employee create/update and device
+  // revoke/reactivate (Track B reporting) — without this migration those inserts 500 against a
+  // table that doesn't exist here, which is what was actually failing every downstream test below.
+  await db.exec(await readFile(new URL('../../../supabase/migrations/202609190001_audit_log.sql', import.meta.url), 'utf8'))
   const owner = randomUUID(), cashier = randomUUID(), store = randomUUID(), otherStore = randomUUID()
   await db.query('insert into auth.users(id) values($1),($2)', [owner, cashier])
   await db.query("insert into public.stores(id,name,code,created_by) values($1,'Test store','test-a',$3),($2,'Other store','test-b',$3)", [store, otherStore, owner])

@@ -17,7 +17,6 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 import './product-catalog.css'
 
 type StockMap = Record<string, number>
-type CreatedTaxRate = { id: string; store_id: string; name: string; rate_bps: number; active: boolean }
 
 interface FormState {
   name: string
@@ -278,33 +277,11 @@ export function ProductCatalogScreen() {
         form.categoryId === '__new__' && form.newCategoryName.trim()
           ? form.newCategoryName.trim()
           : null
+      const finalTaxRateId = form.taxRateId && form.taxRateId !== '__new__' ? form.taxRateId : null
+      const newTaxRateName = form.taxRateId === '__new__' ? form.newTaxRateName.trim() : null
+      const newTaxRateBps = newTaxRateName ? Math.round(Number(form.newTaxRatePercent) * 100) : null
 
       const token = await accessToken()
-
-      // Tax rates have their own endpoint (unlike categories, which are created inline within
-      // the product transaction), so a brand-new rate has to be created first and its id threaded
-      // into the product payload. If the product create fails after this succeeds, the tax rate
-      // stays created (a harmless, reusable row) rather than being rolled back — an accepted
-      // trade-off of the two-call design.
-      let finalTaxRateId = form.taxRateId && form.taxRateId !== '__new__' ? form.taxRateId : null
-      let createdTaxRate: CreatedTaxRate | null = null
-      if (form.taxRateId === '__new__') {
-        const taxResp = await fetch(`${configuredApiUrl()}/catalog/tax-rates`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            store_id: storeId,
-            name: form.newTaxRateName.trim(),
-            rate_bps: parseRateBps(form.newTaxRatePercent),
-          }),
-        })
-        const taxData = (await taxResp.json()) as { tax_rate?: CreatedTaxRate; message?: string }
-        if (!taxResp.ok) throw new Error(taxData.message ?? `Server error (${taxResp.status})`)
-        if (!taxData.tax_rate) throw new Error('Server returned no tax rate.')
-        createdTaxRate = taxData.tax_rate
-        finalTaxRateId = createdTaxRate.id
-      }
 
       // Product images upload straight to Supabase Storage from the browser (publishable key +
       // RLS, same pattern the rest of the app uses for anything Supabase-authenticated) rather
@@ -335,6 +312,8 @@ export function ProductCatalogScreen() {
           new_category_name: newCatName,
           tax_rate_id: finalTaxRateId,
           image_url: imageUrl,
+          new_tax_rate_name: newTaxRateName,
+          new_tax_rate_rate_bps: newTaxRateBps,
           unit_price_cents: priceCents,
           initial_stock: initialStock,
         }),
@@ -355,6 +334,7 @@ export function ProductCatalogScreen() {
         }
         stock?: { product_id: string; current_stock: number }
         category?: { id: string; store_id: string; name: string; active: boolean }
+        taxRate?: { id: string; store_id: string; name: string; rate_bps: number; active: boolean }
         message?: string
       }
       if (!resp.ok) throw new Error(data.message ?? `Server error (${resp.status})`)
@@ -362,7 +342,7 @@ export function ProductCatalogScreen() {
 
       await posDb.transaction('rw', [posDb.products, posDb.server_stock, posDb.categories, posDb.tax_rates], async () => {
         if (data.category) await posDb.categories.put({ ...data.category, parent_id: null })
-        if (createdTaxRate) await posDb.tax_rates.put(createdTaxRate)
+        if (data.taxRate) await posDb.tax_rates.put(data.taxRate)
         await posDb.products.put({ ...data.product!, unit_price_cents: data.product!.unit_price_cents })
         if (data.stock) {
           await posDb.server_stock.put({
@@ -823,24 +803,23 @@ export function ProductCatalogScreen() {
                     <option value="__new__">+ Create new tax rate…</option>
                   </select>
                   {form.taxRateId === '__new__' && (
-                    <div className="pc-pair" style={{ marginTop: 6 }}>
+                    <div className="pc-newtax">
                       <input
-                        className={`pc-newcat ${errs.newTaxRateName ? 'err' : ''}`}
+                        className={errs.newTaxRateName ? 'err' : ''}
                         type="text"
-                        placeholder="Tax rate name (e.g. State Sales Tax)"
+                        placeholder="Tax rate name (e.g. Sales tax)"
                         value={form.newTaxRateName}
                         onChange={(e) => setField('newTaxRateName', e.target.value)}
-                        maxLength={60}
+                        maxLength={80}
                         autoComplete="off"
                       />
                       <input
-                        className={`pc-newcat ${errs.newTaxRatePercent ? 'err' : ''}`}
+                        className={errs.newTaxRatePercent ? 'err' : ''}
                         type="text"
                         inputMode="decimal"
-                        placeholder="Rate % (e.g. 8.25)"
+                        placeholder="Percent (e.g. 8.5)"
                         value={form.newTaxRatePercent}
                         onChange={(e) => setField('newTaxRatePercent', e.target.value)}
-                        autoComplete="off"
                       />
                     </div>
                   )}

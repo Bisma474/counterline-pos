@@ -18,11 +18,27 @@ import {
   type CashierShiftSummary,
 } from '../lib/reporting'
 import { currentAccess } from '../terminal-auth/cache'
-import { configuredApiUrl } from '../lib/catalog'
+import { configuredApiUrl, loadCatalog } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
+import { fetchDailySummary, fetchOrdersPage, fetchOversold, type ServerOversoldProduct } from '../lib/server-reports'
+import { buildCsv, downloadCsv } from '../lib/csv'
 import './reporting.css'
 
+// Health-check the API the same way ConnectionAndSync/CashierDashboardScreen do: navigator.onLine
+// alone doesn't tell us the API is actually up, so probe /health with a short timeout.
+async function isApiReachable(): Promise<boolean> {
+  if (!navigator.onLine) return false
+  try {
+    const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 interface ReportState {
+  storeId: string
+  day: string
   config: StoreConfig
   report: LocalSalesReport
   topProducts: TopProduct[]
@@ -31,17 +47,31 @@ interface ReportState {
 }
 
 function useFinancialReport(day?: string) {
+  const [localState, setLocalState] = useState<ReportState>()
   const [state, setState] = useState<ReportState>()
   const [error, setError] = useState('')
   useEffect(() => {
     let active = true
     let subscription: { unsubscribe(): void } | undefined
-    setState(undefined)
+    setLocalState(undefined)
     setError('')
     void resolveFinancialAccess()
       .then(async access => {
-        const config = await posDb.store_config.get(access.storeId)
-        if (!config) throw new Error('No store configuration is saved in this browser. Open the register online once.')
+        let config = await posDb.store_config.get(access.storeId)
+        // A browser that has never opened the register/products screens has no local catalog
+        // snapshot yet — the app is online-and-offline, so bootstrap it from the server the same
+        // way opening Register would, instead of hard-failing reporting on a brand-new device.
+        if (!config && navigator.onLine) {
+          try {
+            await loadCatalog(access.storeId)
+            config = await posDb.store_config.get(access.storeId)
+          } catch {
+            // Fall through to the "no store configuration" error below — e.g. offline, the
+            // request failed, or there are unresolved outbox entries loadCatalog refuses to
+            // overwrite. Reporting still needs a config either way.
+          }
+        }
+        if (!config) throw new Error('No store configuration is saved in this browser. Connect once with this browser online to load it.')
         const reportDay = day || todayInTimezone(config.timezone)
 
         subscription = liveQuery(async () => {
@@ -65,10 +95,10 @@ function useFinancialReport(day?: string) {
           const lowStock = calculateLowStockItems(products, stock, adjustments, 5, 5)
           const recentOrders = getRecentOrders(orders, items, payments, access.storeId, 5)
 
-          return { config, report, topProducts, lowStock, recentOrders }
+          return { storeId: access.storeId, day: reportDay, config, report, topProducts, lowStock, recentOrders }
         }).subscribe({
           next: data => {
-            if (active) setState(data)
+            if (active) setLocalState(data)
           },
           error: reason => {
             if (active) setError(reason instanceof Error ? reason.message : 'Unable to calculate reporting totals.')
@@ -82,18 +112,210 @@ function useFinancialReport(day?: string) {
     return () => {
       active = false
       subscription?.unsubscribe()
-      setState(undefined)
+      setLocalState(undefined)
     }
   }, [day])
+
+  // Precedence: when the API is reachable, prefer the server's cross-device daily summary for the
+  // financial totals so a second device sees every sale for the store, not just this browser's own.
+  // pendingCount/rejectedAmountCents etc. stay sourced from the local outbox either way, since those
+  // describe this browser's own queued/rejected sync state and have no server-side equivalent (a
+  // rejected sale never reaches pos_orders at all). Falls back to the local Dexie calculation as-is
+  // whenever offline or the request fails, so offline use is unaffected.
+  useEffect(() => {
+    let active = true
+    if (!localState) {
+      setState(undefined)
+      return
+    }
+    void (async () => {
+      let report = localState.report
+      if (await isApiReachable()) {
+        try {
+          const summary = await fetchDailySummary(localState.storeId, localState.day)
+          report = {
+            ...summary,
+            pendingCount: localState.report.pendingCount,
+            pendingAmountCents: localState.report.pendingAmountCents,
+            rejectedCount: localState.report.rejectedCount,
+            rejectedAmountCents: localState.report.rejectedAmountCents,
+          }
+        } catch {
+          // Server summary unavailable — fall through to the local calculation.
+        }
+      }
+      // Only commit once resolved, so a table change elsewhere in the store (e.g. a stock
+      // adjustment) that re-triggers this effect doesn't flash the totals down to the local-only
+      // figure while the server summary re-fetches; the previously merged state stays on screen.
+      if (active) setState({ ...localState, report })
+    })()
+    return () => {
+      active = false
+    }
+  }, [localState])
+
   return { state, error }
+}
+
+// Oversold panel data: pulled straight from /reports/oversold (server truth across every device),
+// unlike calculateLowStockItems which only reflects this browser's synced stock projection. Only
+// meaningful when the API is reachable — there is no offline/local equivalent to fall back to, so
+// the panel simply stays empty rather than showing stale or misleading data.
+function useOversoldProducts(storeId: string | undefined) {
+  const [products, setProducts] = useState<ServerOversoldProduct[]>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    setProducts(undefined)
+    setError('')
+    if (!storeId) return
+    void (async () => {
+      if (!(await isApiReachable())) {
+        if (active) setError('Connect to the internet to load server-wide oversold products.')
+        return
+      }
+      try {
+        const result = await fetchOversold(storeId)
+        if (active) setProducts(result)
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'Unable to load oversold products.')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId])
+  return { products, error }
+}
+
+// Shifts a YYYY-MM-DD calendar-day string by a number of whole days. Pure date-string arithmetic
+// (no timezone lookup) — good enough for a "vs yesterday" comparison per the visual-redesign scope,
+// which is explicitly meant to stay simple rather than reproduce calendarDay()'s timezone precision.
+function shiftDay(day: string, deltaDays: number): string {
+  const [year, month, date] = day.split('-').map(Number)
+  const shifted = new Date(Date.UTC(year, month - 1, date))
+  shifted.setUTCDate(shifted.getUTCDate() + deltaDays)
+  return shifted.toISOString().slice(0, 10)
+}
+
+// Simple day-over-day comparison: fetches the prior calendar day's server-side recorded total so the
+// dashboard can show a "vs yesterday" delta next to the headline KPI. Server-only (like the oversold
+// panel and cashier breakdown) — there's no meaningful offline equivalent, so the badge just stays
+// hidden when the API is unreachable rather than showing a stale or misleading number.
+function usePreviousDayTotal(storeId: string | undefined, day: string | undefined) {
+  const [previousCents, setPreviousCents] = useState<number>()
+  useEffect(() => {
+    let active = true
+    setPreviousCents(undefined)
+    if (!storeId || !day) return
+    void (async () => {
+      if (!(await isApiReachable())) return
+      try {
+        const summary = await fetchDailySummary(storeId, shiftDay(day, -1))
+        if (active) setPreviousCents(summary.recordedTotalCents)
+      } catch {
+        // No comparison available for the prior day — badge stays hidden.
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId, day])
+  return previousCents
+}
+
+export interface CashierBreakdownRow { employeeId: string | null; name: string; orderCount: number; totalCents: number }
+
+// Sales-by-cashier: pages through the same cross-device /reports/orders drill-down used for remote
+// history restoration, grouping by cashierName/employeeId. Server-only (like the oversold panel) —
+// employee attribution across every device isn't available from a single browser's local Dexie data.
+function useCashierBreakdown(storeId: string | undefined, day: string | undefined) {
+  const [rows, setRows] = useState<CashierBreakdownRow[]>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    setRows(undefined)
+    setError('')
+    if (!storeId || !day) return
+    void (async () => {
+      if (!(await isApiReachable())) {
+        if (active) setError('Connect to the internet to load the cashier breakdown.')
+        return
+      }
+      try {
+        const totals = new Map<string, CashierBreakdownRow>()
+        let cursor: string | null | undefined
+        do {
+          const page = await fetchOrdersPage(storeId, day, cursor, 200)
+          for (const order of page.orders) {
+            if (order.refunded) continue
+            const key = order.employeeId ?? 'unassigned'
+            const existing = totals.get(key)
+            if (existing) {
+              existing.orderCount += 1
+              existing.totalCents += order.totalCents
+            } else {
+              totals.set(key, {
+                employeeId: order.employeeId,
+                name: order.cashierName ?? 'Unassigned',
+                orderCount: 1,
+                totalCents: order.totalCents,
+              })
+            }
+          }
+          cursor = page.next_cursor
+        } while (cursor && active)
+        if (active) setRows(Array.from(totals.values()).sort((a, b) => b.totalCents - a.totalCents))
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'Unable to load the cashier breakdown.')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [storeId, day])
+  return { rows, error }
 }
 
 const Money = ({ cents, currency }: { cents: number; currency: string }) => <>{formatCents(cents, currency)}</>
 
+// Builds the same rows regardless of whether `report` came from the local Dexie calculation or the
+// server daily-summary — both are normalized to the LocalSalesReport shape by useFinancialReport,
+// so this export needs no branching on data source.
+function exportDailyReportCsv(state: ReportState) {
+  const { report, config, day } = state
+  const rows: (string | number)[][] = [
+    ['Counterline POS — daily sales report'],
+    ['Store', config.name],
+    ['Report date', day],
+    ['Timezone', config.timezone],
+    ['Currency', config.currency],
+    [],
+    ['Metric', 'Value'],
+    ['Gross sales', formatCents(report.grossSalesCents, config.currency)],
+    ['Discounts', formatCents(report.discountCents, config.currency)],
+    ['Net sales', formatCents(report.netSalesCents, config.currency)],
+    ['Tax collected', formatCents(report.taxCents, config.currency)],
+    ['Cash takings', formatCents(report.cashTakingsCents, config.currency)],
+    ['Card takings', formatCents(report.cardTakingsCents, config.currency)],
+    ['Recorded total', formatCents(report.recordedTotalCents, config.currency)],
+    ['Completed orders', report.completedOrderCount],
+    ['Average sale', formatCents(report.averageSaleCents, config.currency)],
+    ['Items sold', report.itemsSold],
+    ['Pending sync — count', report.pendingCount],
+    ['Pending sync — amount', formatCents(report.pendingAmountCents, config.currency)],
+    ['Rejected — count', report.rejectedCount],
+    ['Rejected — amount', formatCents(report.rejectedAmountCents, config.currency)],
+  ]
+  downloadCsv(`counterline-daily-report-${day}.csv`, buildCsv(rows))
+}
+
 export function OwnerDashboardScreen() {
   const { state, error } = useFinancialReport()
+  const { products: oversoldProducts, error: oversoldError } = useOversoldProducts(state?.storeId)
+  const previousDayTotal = usePreviousDayTotal(state?.storeId, state?.day)
   if (error) return <AccessMessage message={error} />
-  if (!state) return <section className="reporting-page" role="status">Checking reporting access and local sales…</section>
+  if (!state) return <DashboardSkeleton />
   const { report, config, topProducts, lowStock, recentOrders } = state
 
   const totalTakings = report.cashTakingsCents + report.cardTakingsCents
@@ -114,9 +336,15 @@ export function OwnerDashboardScreen() {
         </div>
       </header>
 
-      {/* KPI Stats */}
+      {/* KPI Stats — the headline metric is visually emphasized, the rest stay lighter-weight */}
       <div className="report-card-grid">
-        <ReportCard label="Today’s recorded sales" value={<Money cents={report.recordedTotalCents} currency={config.currency} />} detail="Total revenue completed locally" />
+        <ReportCard
+          label="Today’s recorded sales"
+          value={<Money cents={report.recordedTotalCents} currency={config.currency} />}
+          detail="Total revenue completed locally"
+          featured
+          delta={previousDayTotal === undefined ? undefined : <DeltaBadge current={report.recordedTotalCents} previous={previousDayTotal} />}
+        />
         <ReportCard label="Completed orders" value={report.completedOrderCount} detail="Saved in this store browser" />
         <ReportCard label="Average sale" value={<Money cents={report.averageSaleCents} currency={config.currency} />} detail="Recorded total ÷ orders" />
         <ReportCard label="Items sold" value={report.itemsSold} detail="Total units rung up today" />
@@ -131,10 +359,7 @@ export function OwnerDashboardScreen() {
           </div>
           {totalTakings > 0 ? (
             <div className="tender-distribution">
-              <div className="tender-bar" role="progressbar" aria-valuenow={cashPct} aria-valuemin={0} aria-valuemax={100}>
-                <div className="bar-cash" style={{ width: `${cashPct}%` }} title={`Cash: ${cashPct}%`} />
-                <div className="bar-card" style={{ width: `${cardPct}%` }} title={`Card: ${cardPct}%`} />
-              </div>
+              <TenderDonut cashPct={cashPct} cardPct={cardPct} />
               <div className="tender-legend">
                 <div className="legend-item">
                   <span className="dot dot-cash" />
@@ -213,6 +438,32 @@ export function OwnerDashboardScreen() {
             <p className="empty-panel-copy healthy">✓ All product inventory levels are healthy.</p>
           )}
         </section>
+
+        <section className="dashboard-panel">
+          <div className="panel-header">
+            <h2>Oversold products</h2>
+            <small>Server-wide stock gone negative, across every device</small>
+          </div>
+          {oversoldError ? (
+            <p className="empty-panel-copy">{oversoldError}</p>
+          ) : oversoldProducts === undefined ? (
+            <p className="empty-panel-copy" role="status">Loading server oversold data…</p>
+          ) : oversoldProducts.length ? (
+            <ul className="alert-list">
+              {oversoldProducts.map(item => (
+                <li key={item.id} className="alert-row">
+                  <div>
+                    <strong>{item.name}</strong>
+                    <small>SKU: {item.sku}</small>
+                  </div>
+                  <span className="stock-pill out">{item.current_stock} oversold</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="empty-panel-copy healthy">✓ No products are oversold across the store.</p>
+          )}
+        </section>
       </div>
 
       {/* Recent Store Orders */}
@@ -262,6 +513,7 @@ export function OwnerDashboardScreen() {
 export function ReportsScreen() {
   const [day, setDay] = useState('')
   const { state, error } = useFinancialReport(day || undefined)
+  const { rows: cashierRows, error: cashierError } = useCashierBreakdown(state?.storeId, state?.day)
   useEffect(() => {
     if (state && !day) setDay(todayInTimezone(state.config.timezone))
   }, [state, day])
@@ -274,14 +526,19 @@ export function ReportsScreen() {
           <p>Calendar days use the saved store timezone and the recorded sale time.</p>
         </div>
         {state && (
-          <label className="day-picker">
-            Report date
-            <input type="date" value={day} onChange={event => setDay(event.target.value)} />
-          </label>
+          <div className="reports-heading-controls">
+            <label className="day-picker">
+              Report date
+              <input type="date" value={day} onChange={event => setDay(event.target.value)} />
+            </label>
+            <button type="button" className="report-secondary export-csv-btn" onClick={() => exportDailyReportCsv(state)}>
+              Export CSV <span aria-hidden="true">↓</span>
+            </button>
+          </div>
         )}
       </header>
       {error && <AccessMessage message={error} embedded />}
-      {!error && !state && <p role="status">Checking reporting access and local sales…</p>}
+      {!error && !state && <ReportLinesSkeleton />}
       {state && (
         <>
           <div className="report-metrics">
@@ -307,6 +564,32 @@ export function ReportsScreen() {
               <p>Reversed sales — excluded from every total above, not just netted out of it.</p>
             </div>
             <StatusAmount label="Refunded" count={state.report.refundedCount} cents={state.report.refundedAmountCents} currency={state.config.currency} rejected />
+          </section>
+
+          <section className="dashboard-panel">
+            <div className="panel-header">
+              <h2>Sales by cashier</h2>
+              <small>Cross-device totals for {day}</small>
+            </div>
+            {cashierError ? (
+              <p className="empty-panel-copy">{cashierError}</p>
+            ) : cashierRows === undefined ? (
+              <p className="empty-panel-copy" role="status">Loading cashier breakdown…</p>
+            ) : cashierRows.length ? (
+              <ul className="ranked-list">
+                {cashierRows.map(row => (
+                  <li key={row.employeeId ?? 'unassigned'} className="ranked-row">
+                    <div className="ranked-details">
+                      <strong>{row.name}</strong>
+                      <small>{row.orderCount} {row.orderCount === 1 ? 'sale' : 'sales'}</small>
+                    </div>
+                    <b><Money cents={row.totalCents} currency={state.config.currency} /></b>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-panel-copy">No sales recorded for this day yet.</p>
+            )}
           </section>
         </>
       )}
@@ -393,16 +676,8 @@ export function CashierDashboardScreen() {
   useEffect(() => {
     let active = true
     const checkApi = async () => {
-      if (!navigator.onLine) {
-        if (active) setApiReachable(false)
-        return
-      }
-      try {
-        const response = await fetch(`${configuredApiUrl()}/health`, { signal: AbortSignal.timeout(3_000) })
-        if (active) setApiReachable(response.ok)
-      } catch {
-        if (active) setApiReachable(false)
-      }
+      const reachable = await isApiReachable()
+      if (active) setApiReachable(reachable)
     }
     void checkApi()
     const timer = window.setInterval(() => void checkApi(), 15_000)
@@ -564,13 +839,91 @@ function AccessMessage({ message, embedded = false }: { message: string; embedde
   )
 }
 
-function ReportCard({ label, value, detail }: { label: string; value: ReactNode; detail: string }) {
+function ReportCard({ label, value, detail, featured = false, delta }: { label: string; value: ReactNode; detail: string; featured?: boolean; delta?: ReactNode }) {
   return (
-    <article className="report-card">
+    <article className={featured ? 'report-card featured' : 'report-card'}>
       <small>{label}</small>
       <strong>{value}</strong>
-      <span>{detail}</span>
+      <div className="report-card-footer">
+        <span>{detail}</span>
+        {delta}
+      </div>
     </article>
+  )
+}
+
+// Simple day-over-day indicator — a small up/down badge next to the headline KPI, per the visual
+// redesign's "keep it simple" scope (no full trend chart, just a delta against yesterday).
+function DeltaBadge({ current, previous }: { current: number; previous: number }) {
+  if (current === 0 && previous === 0) return null
+  const diff = current - previous
+  const pct = previous > 0 ? Math.round((diff / previous) * 100) : diff > 0 ? 100 : 0
+  const flat = pct === 0
+  const up = diff > 0
+  return (
+    <span className={`delta-badge ${flat ? 'flat' : up ? 'up' : 'down'}`}>
+      <span aria-hidden="true">{flat ? '•' : up ? '▲' : '▼'}</span>
+      {Math.abs(pct)}% vs yesterday
+    </span>
+  )
+}
+
+// Cash vs. card split as an SVG donut instead of the old flat two-segment bar — still pure CSS/SVG,
+// no charting library, matching the visual system's palette (green for cash, coral/orange for card).
+function TenderDonut({ cashPct, cardPct }: { cashPct: number; cardPct: number }) {
+  const radius = 40
+  const circumference = 2 * Math.PI * radius
+  const cashLength = (cashPct / 100) * circumference
+  return (
+    <svg viewBox="0 0 100 100" className="tender-donut" role="img" aria-label={`Cash ${cashPct} percent, card ${cardPct} percent`}>
+      <circle cx="50" cy="50" r={radius} fill="none" stroke="#eae2d3" strokeWidth="14" />
+      {cashPct > 0 && (
+        <circle
+          cx="50" cy="50" r={radius} fill="none" stroke="#238b55" strokeWidth="14"
+          strokeDasharray={`${cashLength} ${circumference - cashLength}`}
+          transform="rotate(-90 50 50)"
+        />
+      )}
+      {cardPct > 0 && (
+        <circle
+          cx="50" cy="50" r={radius} fill="none" stroke="#e2712a" strokeWidth="14"
+          strokeDasharray={`${circumference - cashLength} ${cashLength}`}
+          strokeDashoffset={-cashLength}
+          transform="rotate(-90 50 50)"
+        />
+      )}
+      <text x="50" y="47" textAnchor="middle" className="donut-pct">{cashPct}%</text>
+      <text x="50" y="61" textAnchor="middle" className="donut-label">cash</text>
+    </svg>
+  )
+}
+
+// Skeleton loading placeholders — replace bare "Checking…" text with a shimmering outline of the
+// layout that's about to render, CSS-only (no new dependency).
+function DashboardSkeleton() {
+  return (
+    <section className="reporting-page owner-dashboard" role="status" aria-label="Loading dashboard">
+      <div className="skeleton skeleton-heading" />
+      <div className="report-card-grid">
+        {Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)}
+      </div>
+      <div className="dashboard-subgrid">
+        <div className="skeleton skeleton-panel" />
+        <div className="skeleton skeleton-panel" />
+      </div>
+      <div className="dashboard-columns">
+        <div className="skeleton skeleton-panel tall" />
+        <div className="skeleton skeleton-panel tall" />
+      </div>
+    </section>
+  )
+}
+
+function ReportLinesSkeleton() {
+  return (
+    <div className="report-metrics" role="status" aria-label="Loading report">
+      {Array.from({ length: 7 }).map((_, i) => <div key={i} className="skeleton skeleton-line-row" />)}
+    </div>
   )
 }
 

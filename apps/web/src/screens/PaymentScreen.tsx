@@ -5,6 +5,7 @@ import { completeLocalSale } from '../lib/checkout'
 import { posDb } from '../lib/db'
 import { pushPendingOrders } from '../lib/order-sync'
 import { usePosStore } from '../lib/pos-store'
+import { readTerminal } from '../terminal-auth/cache'
 
 export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   const navigate = useNavigate()
@@ -22,7 +23,10 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [currency, setCurrency] = useState('USD')
+  const [employeeId, setEmployeeId] = useState<string | null>(null)
+  const [employeeLoaded, setEmployeeLoaded] = useState(!terminal)
   useEffect(() => { if (storeId) void posDb.store_config.get(storeId).then(config => { if (config) setCurrency(config.currency) }) }, [storeId])
+  useEffect(() => { if (terminal) void readTerminal().then(cache => { setEmployeeId(cache?.session?.employee_id ?? null); setEmployeeLoaded(true) }) }, [terminal])
   let total = 0
   let amountError = ''
   try { total = totals().totalCents } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Sale amount is invalid.' }
@@ -30,7 +34,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   if (method === 'card') tender = total
   else if (received.trim()) { try { tender = parseCents(received) } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Invalid cash amount.' } }
   const change = tender >= total ? tender - total : 0
-  const canComplete = items.length > 0 && Boolean(storeId) && !amountError && !busy &&
+  const canComplete = items.length > 0 && Boolean(storeId) && !amountError && !busy && employeeLoaded &&
     (method === 'cash' ? tender >= total : cardConfirmed)
   const submit = async () => {
     if (!canComplete || inProgress.current) return
@@ -38,7 +42,7 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
     setBusy(true); setError('')
     try {
       const approval = managerApproval ? { managerId: managerApproval.managerId, approvedAt: managerApproval.approvedAt } : null
-      const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null, selectedCustomer?.id ?? null, approval)
+      const result = await completeLocalSale(items, storeId, method, tender, reference.trim() || null, selectedCustomer?.id ?? null, employeeId, approval)
       clearCart()
       void pushPendingOrders(storeId, terminal).catch(() => undefined)
       navigate(`${terminal ? '/pos/orders' : '/orders'}/${encodeURIComponent(result.operationId)}`, { replace: true, state: { committedOrderId: result.operationId } })

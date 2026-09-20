@@ -19,6 +19,12 @@ export async function withTerminalLock<T>(work: () => Promise<T>) {
   if (!navigator.locks) throw new Error('This browser cannot coordinate terminal access. Use a supported browser over HTTPS.')
   return navigator.locks.request('counterline-terminal-access', work)
 }
+export async function provisionTerminal(storeId: string, name: string) {
+  return withTerminalLock(async () => {
+    const projection = await request<Projection>('/devices/provision', { store_id: storeId, name }, true)
+    return saveProjection(projection)
+  })
+}
 export async function saveProjection(projection: Projection) {
   const previous = await readTerminal()
   const same = previous?.device.id === projection.device.id

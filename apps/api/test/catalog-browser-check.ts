@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import express from 'express'
 import { PGlite } from '@electric-sql/pglite'
@@ -65,12 +66,16 @@ identity.use((req, res, next) => { if (req.headers.authorization !== `Bearer ${t
 identity.get('/auth/v1/user', (_req, res) => { res.json(user) })
 identity.get('/rest/v1/store_memberships', (_req, res) => { res.json([{ store_id: store, role: 'owner', user_id: owner, active: true, joined_at: new Date().toISOString() }]) })
 identity.get('/rest/v1/profiles', (_req, res) => { res.json([{ id: owner, full_name: 'Fixture Owner' }]) })
-identity.get('/rest/v1/stores', (_req, res) => { res.json([{ id: store, name: 'Fixture Catalog Store' }]) })
+// App.tsx's onboarding-status check (202609190001_store_onboarding_status.sql) reads this
+// directly via the Supabase client, so the fixture must answer it or every route falls into the
+// "Something needs your attention" store-load-failure screen.
+// .single() calls expect a bare object in the response body, not an array wrapping one.
+identity.get('/rest/v1/stores', (req, res) => { const row = { id: store, name: 'Fixture Catalog Store', onboarding_completed_at: new Date().toISOString() }; res.json(String(req.headers.accept).includes('vnd.pgrst.object') ? row : [row]) })
 const identityServer = identity.listen(3189, '127.0.0.1')
 const web = express()
 web.use('/api', createApp({ pool: db, origin: 'http://127.0.0.1:3188', supabaseUrl: 'http://127.0.0.1:3189', supabaseKey: 'fixture', secureCookies: false }))
 web.use(express.static(root + 'apps/web/dist'))
-web.get('/{*path}', (_req, res) => { res.sendFile(root + 'apps/web/dist/index.html') })
+web.get('/{*path}', (_req, res) => { res.sendFile('index.html', { root: join(root, 'apps/web/dist') }) })
 const webServer = web.listen(3188, '127.0.0.1')
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
 try {
@@ -126,6 +131,12 @@ try {
   await drawer.getByLabel('Barcode').fill('CB010001')
   await drawer.getByLabel('Category').selectOption({ label: '+ Create new category…' })
   await drawer.getByPlaceholder('Category name (e.g. Specialty Beverages)').fill('Cold Beverages')
+  // New stores get zero tax rates (202609190002_remove_demo_catalog_seed.sql removed the only
+  // insert that ever created one) and there was no way to add one until now — exercise it here,
+  // the same way a brand-new category is created inline above.
+  await drawer.getByLabel('Tax rate').selectOption({ label: '+ Create new tax rate…' })
+  await drawer.getByPlaceholder('Tax rate name (e.g. Sales tax)').fill('State sales tax')
+  await drawer.getByPlaceholder('Percent (e.g. 8.5)').fill('8.5')
   await drawer.getByLabel('Unit price').fill('12.50')
   await drawer.getByLabel('Initial stock').fill('10')
   const createResponse = page.waitForResponse(response => response.url().includes('/catalog/products') && response.request().method() === 'POST')
@@ -139,10 +150,16 @@ try {
   await expect(newRow.getByText('Cold Beverages')).toBeVisible()
 
   // 6. Verify the transaction actually committed: pos_products, pos_stock, and the change feed
-  const created = await database.query<{ id: string; unit_price_cents: string }>(
-    'select id, unit_price_cents::text as unit_price_cents from public.pos_products where store_id=$1 and sku=$2', [store, 'BEV-CB-01'])
+  const created = await database.query<{ id: string; unit_price_cents: string; tax_rate_id: string | null }>(
+    'select id, unit_price_cents::text as unit_price_cents, tax_rate_id from public.pos_products where store_id=$1 and sku=$2', [store, 'BEV-CB-01'])
   assert.equal(created.rows.length, 1, 'Product should be committed to pos_products')
   assert.equal(created.rows[0].unit_price_cents, '1250', 'Price must be stored as integer cents (12.50 -> 1250)')
+  assert(created.rows[0].tax_rate_id, 'Product should be linked to the newly created tax rate')
+  const newTaxRate = await database.query<{ name: string; rate_bps: number }>(
+    'select name, rate_bps from public.pos_tax_rates where id=$1', [created.rows[0].tax_rate_id])
+  assert.equal(newTaxRate.rows.length, 1, 'Tax rate should be committed to pos_tax_rates')
+  assert.equal(newTaxRate.rows[0].name, 'State sales tax')
+  assert.equal(newTaxRate.rows[0].rate_bps, 850, 'Percent must convert to basis points (8.5% -> 850 bps)')
   const productId = created.rows[0].id
   const stockRow = await database.query<{ current_stock: number }>(
     'select current_stock from public.pos_stock where store_id=$1 and product_id=$2', [store, productId])

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Dexie, { liveQuery } from 'dexie'
 import { formatCents } from '../../../../packages/domain/src/money'
@@ -7,6 +7,7 @@ import { pushPendingOrders, retryOrder } from '../lib/order-sync'
 import { classifySyncState, canRetrySync, SYNC_STATE_LABELS, type SyncState } from '../lib/order-sync-core'
 import { saleDate, saleDay } from '../receipts/data'
 import { receiptStore, useReceiptStore } from '../receipts/useReceiptStore'
+import { fetchOrdersPage, type ServerOrderSummary } from '../lib/server-reports'
 import '../receipts/receipts.css'
 
 export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean }) {
@@ -18,6 +19,10 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [remoteOrders, setRemoteOrders] = useState<ServerOrderSummary[]>()
+  const [remoteTruncated, setRemoteTruncated] = useState(false)
+  const [remoteError, setRemoteError] = useState('')
+  const [currency, setCurrency] = useState<string>()
   useEffect(() => {
     setOrders(undefined); setError('')
     if (!scope.storeId) return
@@ -31,7 +36,9 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     return () => { subscription.unsubscribe(); outboxSubscription.unsubscribe() }
   }, [scope.storeId])
   useEffect(() => {
-    if (!scope.storeId) return
+    // CashierPosLayout runs its own reconnect-sync trigger for every /pos/* screen, this one
+    // included — skip this copy in terminal mode so the two don't fire concurrently.
+    if (!scope.storeId || terminal) return
     const sync = async () => {
       try { if (await receiptStore(terminal) === scope.storeId) await pushPendingOrders(scope.storeId, terminal) }
       catch { /* Explicit sync reports errors; background retries preserve the local view. */ }
@@ -41,6 +48,38 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
     const timer = window.setInterval(handler, 15_000)
     return () => { window.removeEventListener('online', handler); window.clearInterval(timer) }
   }, [scope.storeId, terminal])
+  // A local order's day is judged by its own timezone_snapshot (the timezone recorded at sale
+  // time), same as the search filter below — this can occasionally disagree with the server's
+  // day boundary (computed from the store's *current* timezone setting) right at midnight or
+  // after a store timezone change, which could show/hide a boundary order from either list.
+  const hasLocalOrderForDate = useMemo(() => Boolean(date && orders?.some(order => saleDay(order) === date)), [date, orders])
+  const showRemoteHistory = !terminal && Boolean(date) && orders !== undefined && !hasLocalOrderForDate
+  // Backfill from the cross-device GET /reports/orders endpoint when this browser's local Dexie
+  // history has nothing for the chosen date (new browser, lost local storage) — owner/manager view
+  // only, since /reports/orders requires that Supabase-authenticated role and the cashier terminal
+  // view is intentionally register-local. Only a summary is fetched (no line items/payment), so this
+  // section is a read-only supplement, not a replacement for the local list.
+  useEffect(() => {
+    setRemoteOrders(undefined); setRemoteTruncated(false); setRemoteError('')
+    if (!showRemoteHistory) return
+    if (!navigator.onLine) { setRemoteError('You are offline. Reconnect to check other devices for this date.'); return }
+    let active = true
+    void fetchOrdersPage(scope.storeId, date, null, 200)
+      .then(page => {
+        if (!active) return
+        setRemoteOrders(page.orders)
+        setRemoteTruncated(page.next_cursor !== null)
+      })
+      .catch(reason => { if (active) setRemoteError(reason instanceof Error ? reason.message : 'Unable to load orders from other devices.') })
+    return () => { active = false }
+  }, [showRemoteHistory, scope.storeId, date])
+  useEffect(() => {
+    setCurrency(undefined)
+    if (!scope.storeId) return
+    let active = true
+    void posDb.store_config.get(scope.storeId).then(config => { if (active && config) setCurrency(config.currency) })
+    return () => { active = false }
+  }, [scope.storeId])
   const sync = async (orderId?: string) => {
     if (!scope.storeId || busy) return
     setBusy(true); setError(''); setNotice('')
@@ -87,5 +126,30 @@ export function OrderHistoryScreen({ terminal = false }: { terminal?: boolean })
         </article>
       )
     })}</div>
+    {showRemoteHistory && (
+      <div className="remote-history">
+        <h2>Restored from other devices</h2>
+        {remoteOrders === undefined && !remoteError && <p role="status">Checking other devices for this date…</p>}
+        {remoteError && <p className="history-reason">{remoteError}</p>}
+        {Boolean(remoteOrders?.length) && !currency && (
+          <p className="history-reason">This browser hasn't confirmed the store's currency yet. Connect once with this browser signed in, then reopen this date to see amounts.</p>
+        )}
+        {remoteOrders?.length === 0 && <p>No sales recorded on other devices for this date either.</p>}
+        {Boolean(remoteOrders?.length) && currency && (
+          <>
+            <p className="screen-note">This browser has no saved copy of these sales, so only a summary is shown — receipt detail isn't available here.
+              {remoteTruncated && ' Showing the first 200 sales for this date; more exist.'}</p>
+            <div className="history-list">{remoteOrders!.map(order => (
+              <article key={order.id}>
+                <div><strong>{order.receiptNumber}</strong><small>{new Date(order.time).toLocaleString()}{order.cashierName ? ` | ${order.cashierName}` : ''}</small></div>
+                <b>{formatCents(order.totalCents, currency)}</b>
+                <span className="order-state synced">Synced</span>
+                <small>{order.itemCount} item{order.itemCount === 1 ? '' : 's'} | {order.paymentMethod}</small>
+              </article>
+            ))}</div>
+          </>
+        )}
+      </div>
+    )}
   </section>
 }

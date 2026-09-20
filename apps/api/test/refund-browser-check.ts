@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import express from 'express'
 import { PGlite } from '@electric-sql/pglite'
@@ -38,6 +39,7 @@ for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_ch
   '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql',
   '202609160001_customers_and_sale_attachment.sql', '202609170001_change_feed_product_entity.sql',
   '202609170002_cart_discounts.sql', '202609180001_terminal_name_uniqueness.sql',
+  '202609180002_pos_orders_report_read_access.sql',
   '202609180002_store_business_details.sql', '202609180003_tax_rate_change_feed.sql',
   '202609180004_product_images.sql', '202609180005_refunds.sql']) {
   await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
@@ -84,13 +86,13 @@ identity.get('/rest/v1/store_memberships', (req, res) => {
   res.json([{ store_id: store, role: isOwner ? 'owner' : 'cashier', user_id: isOwner ? owner : cashier, active: true, joined_at: new Date().toISOString() }])
 })
 identity.get('/rest/v1/profiles', (_req, res) => { res.json([{ id: owner, full_name: 'Fixture Owner' }]) })
-identity.get('/rest/v1/stores', (_req, res) => { res.json([{ id: store, name: 'Fixture Refund Store' }]) })
+identity.get('/rest/v1/stores', (req, res) => { const row = { id: store, name: 'Fixture Refund Store', onboarding_completed_at: new Date().toISOString() }; res.json(String(req.headers.accept).includes('vnd.pgrst.object') ? row : [row]) })
 const identityServer = identity.listen(3193, '127.0.0.1')
 
 const web = express()
 web.use('/api', createApp({ pool: db, origin: 'http://127.0.0.1:3192', supabaseUrl: 'http://127.0.0.1:3193', supabaseKey: 'fixture', secureCookies: false }))
 web.use(express.static(root + 'apps/web/dist'))
-web.get('/{*path}', (_req, res) => { res.sendFile(root + 'apps/web/dist/index.html') })
+web.get('/{*path}', (_req, res) => { res.sendFile('index.html', { root: join(root, 'apps/web/dist') }) })
 const webServer = web.listen(3192, '127.0.0.1')
 
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined

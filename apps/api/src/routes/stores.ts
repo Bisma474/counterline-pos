@@ -18,36 +18,14 @@ async function getStore(req: import('express').Request, res: import('express').R
   } catch (reason) { sendApiError(res, reason) }
 }
 
-// Free, keyless FX source (open.er-api.com) covering the full CURRENCY_OPTIONS list used by
-// Signup/StoreDetails, including currencies outside the ECB reference set. Rates are inherently
-// approximate real numbers — that's unavoidable for a currency conversion, unlike same-currency
-// money math — but the value actually persisted is always produced by Postgres's numeric round(),
-// never JS floating-point arithmetic, so the stored cents are exact integers.
-async function fetchExchangeRate(from: string, to: string): Promise<number> {
-  let response: Response
-  try {
-    response = await fetch(`https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`, { signal: AbortSignal.timeout(8_000) })
-  } catch {
-    throw new ApiError(503, 'exchange_rate_unavailable', `Could not reach the exchange rate service to convert ${from} to ${to}. Try again.`)
-  }
-  if (!response.ok) throw new ApiError(503, 'exchange_rate_unavailable', `Exchange rate service returned an error (${response.status}).`)
-  const data = (await response.json().catch(() => null)) as { result?: string; rates?: Record<string, number> } | null
-  if (!data || data.result !== 'success' || !data.rates) throw new ApiError(503, 'exchange_rate_unavailable', 'Exchange rate service returned no usable data.')
-  const rate = data.rates[to]
-  if (!Number.isFinite(rate) || rate <= 0) throw new ApiError(422, 'validation_failed', `No exchange rate is available from ${from} to ${to}.`)
-  return rate
-}
-
 // ---------------------------------------------------------------------------
 // PATCH /stores/:id — owner/manager edits business details.
 // Partial update: only fields present in the body are changed. name is deliberately
 // not editable here — it is set at store creation and not part of this task's scope.
 //
-// Changing currency converts every product's price using a live exchange rate, rather than
-// just relabeling the same integer cents as a different currency (which would silently turn a
-// $1.00 item into a 1.00 PKR item — off by roughly 278x). Tax rates are percentages (basis
-// points), not money amounts, so they never need conversion. Historical orders/payments keep
-// their own currency snapshot from checkout time and are never touched here.
+// Currency can only change before catalog or sales activity. An offline terminal may have
+// paid sales queued in the original currency, so a store-wide conversion cannot safely
+// reprice an active store without a coordinated migration across every device.
 // ---------------------------------------------------------------------------
 async function patchStore(req: import('express').Request, res: import('express').Response) {
   try {
@@ -91,13 +69,20 @@ async function patchStore(req: import('express').Request, res: import('express')
     if (!updates.length) throw new ApiError(422, 'validation_failed', 'No fields to update were provided.')
 
     const changingCurrency = newCurrency !== null && newCurrency !== currentCurrency
-    // Fetch the rate before opening a transaction — an external HTTP call has no business
-    // holding a database transaction open while it's in flight.
-    const rate = changingCurrency ? await fetchExchangeRate(currentCurrency, newCurrency as string) : null
-
     const client = await db.connect()
     try {
       await client.query('begin')
+      if (changingCurrency) {
+        // Product creation and order push also lock this row, so the empty-store check
+        // cannot race with either operation.
+        await client.query('select last_position from public.pos_sync_feed_state where store_id=$1 for update', [storeId])
+        const activity = await client.query(`select
+          exists(select 1 from public.pos_products where store_id=$1) as products,
+          exists(select 1 from public.pos_orders where store_id=$1) as orders`, [storeId])
+        if (activity.rows[0]?.products || activity.rows[0]?.orders) {
+          throw new ApiError(409, 'currency_change_blocked', 'Currency can only change before products or sales have been created for this store.')
+        }
+      }
       values.push(storeId)
       const result = await client.query(
         `update public.stores set ${updates.join(', ')}, updated_at = now() where id = $${index}
@@ -106,21 +91,8 @@ async function patchStore(req: import('express').Request, res: import('express')
       )
       if (!result.rows[0]) throw new ApiError(404, 'not_found', 'Store not found.')
 
-      let repriced: { product_count: number; rate: number; from: string; to: string } | null = null
-      let updatedProducts: { id: string; unit_price_cents: string }[] = []
-      if (changingCurrency && rate !== null) {
-        const priceRes = await client.query<{ id: string; unit_price_cents: string }>(
-          `update public.pos_products set unit_price_cents = round(unit_price_cents * $1::numeric)::bigint
-           where store_id = $2
-           returning id, unit_price_cents::text as unit_price_cents`,
-          [rate, storeId],
-        )
-        updatedProducts = priceRes.rows
-        repriced = { product_count: updatedProducts.length, rate, from: currentCurrency, to: newCurrency as string }
-      }
-
       await client.query('commit')
-      res.json({ ...result.rows[0], repriced, updated_products: updatedProducts })
+      res.json(result.rows[0])
     } catch (reason) {
       await client.query('rollback')
       throw reason

@@ -118,7 +118,7 @@ export async function loadCatalog(storeId: string, terminal = false): Promise<'u
   await posDb.transaction('rw', [posDb.store_config, posDb.categories, posDb.tax_rates,
     posDb.products, posDb.server_stock, posDb.stock_adjustments, posDb.outbox], async () => {
       const unresolved = await posDb.outbox.where('store_id').equals(storeId).toArray()
-      if (unresolved.some(entry => entry.status === 'pending' || entry.failure_kind !== 'validation')) {
+      if (unresolved.some(entry => entry.status !== 'synced' && entry.failure_kind !== 'validation')) {
         throw new Error('Pending sync outcomes must be resolved before refreshing stock.')
       }
       await posDb.store_config.put({ id: storeId, store_id: storeId, name: snapshot.store.name,

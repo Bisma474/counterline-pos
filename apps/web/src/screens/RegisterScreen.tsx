@@ -70,7 +70,9 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
     return () => subscription.unsubscribe()
   }, [selectedCustomer?.id, selectCustomer])
   useEffect(() => {
-    if (!storeId) return
+    // CashierPosLayout runs its own reconnect-sync trigger for every /pos/* screen, this one
+    // included — skip this copy in terminal mode so the two don't fire concurrently.
+    if (!storeId || terminal) return
     let active = true
     const sync = () => { if (active && navigator.onLine) void pushPendingOrders(storeId, terminal).catch(() => undefined) }
     window.addEventListener('online', sync)

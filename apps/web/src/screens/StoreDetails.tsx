@@ -59,12 +59,10 @@ export function StoreDetails() {
     if (!store) return
     const form = new FormData(event.currentTarget)
     const currency = String(form.get('currency')).trim().toUpperCase()
-    // Changing currency without converting prices would silently turn a $1.00 item into a
-    // 1.00 PKR item — off by roughly 278x. Confirm explicitly before an owner triggers a
-    // store-wide repricing, since the server is about to rewrite every product's price.
+    // The server only allows currency changes before any products or sales exist.
     if (currency !== store.currency) {
       const proceed = window.confirm(
-        `Changing currency from ${store.currency} to ${currency} will convert every product's price using the current exchange rate (e.g. $1.00 ${store.currency} becomes its equivalent in ${currency}, not just "1.00 ${currency}"). Continue?`,
+        `Change store currency from ${store.currency} to ${currency}? This is allowed only before products or sales have been created.`,
       )
       if (!proceed) return
     }
@@ -84,11 +82,7 @@ export function StoreDetails() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       })
-      const data = (await response.json()) as StoreRecord & {
-        message?: string
-        repriced?: { product_count: number; rate: number; from: string; to: string } | null
-        updated_products?: { id: string; unit_price_cents: string }[]
-      }
+      const data = (await response.json()) as StoreRecord & { message?: string }
       if (!response.ok) throw new Error(data.message ?? `Server error (${response.status})`)
       setStore(data)
       // Currency and timezone feed every money/clock display cached locally (Register, receipts,
@@ -100,21 +94,7 @@ export function StoreDetails() {
       if (cachedConfig) {
         await posDb.store_config.put({ ...cachedConfig, currency: data.currency, timezone: data.timezone })
       }
-      // The server already converted every product's price — mirror the same new values into
-      // the local cache directly rather than re-fetching the whole catalog (same pending-outbox
-      // restriction as above would apply to a full loadCatalog() refresh).
-      if (data.updated_products?.length) {
-        await posDb.transaction('rw', posDb.products, async () => {
-          for (const product of data.updated_products!) {
-            await posDb.products.update(product.id, { unit_price_cents: Number(product.unit_price_cents) })
-          }
-        })
-      }
-      setMessage(
-        data.repriced
-          ? `Store details saved. ${data.repriced.product_count} product${data.repriced.product_count === 1 ? '' : 's'} repriced at 1 ${data.repriced.from} = ${data.repriced.rate.toFixed(4)} ${data.repriced.to}.`
-          : 'Store details saved.',
-      )
+      setMessage('Store details saved.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to save store details.')
     } finally {
@@ -197,7 +177,7 @@ export function StoreDetails() {
                   </select>
                 </div>
               </div>
-              <p className="pc-field-hint">Changing currency updates money formatting on this device immediately.</p>
+              <p className="pc-field-hint">Currency can only be changed before products or sales are created. Timezone changes apply immediately.</p>
             </div>
 
             <div className="pc-group">

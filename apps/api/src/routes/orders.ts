@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { db } from '../db.js'
 import { ApiError, requireStoreMember, requireStoreManager, sendApiError } from './auth.js'
 import { boundedInteger, calculateDiscountedLine, discountNeedsManagerApproval, MAX_CENTS, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money.js'
-import { requireDeviceTerminal } from '../terminal-auth/routes.js'
+import { requireCashierTerminal, requireDeviceTerminal } from '../terminal-auth/routes.js'
 
 export const ordersRouter = Router()
 export const terminalOrdersRouter = Router()
@@ -89,6 +89,7 @@ export function validateOperation(raw: unknown) {
       totals.taxCents !== order.tax_cents || totals.totalCents !== order.total_cents) {
     throw new ApiError(422, 'total_mismatch', 'Order totals do not match line totals.')
   }
+  const employeeId = order.employee_id === null || order.employee_id === undefined ? null : id(order.employee_id, 'Employee ID')
   const managerId = order.manager_id === null || order.manager_id === undefined ? null : id(order.manager_id, 'Manager ID')
   const managerApprovedAt = order.manager_approved_at === null || order.manager_approved_at === undefined ? null : timestamp(order.manager_approved_at, 'Manager approval time')
   if ((managerId === null) !== (managerApprovedAt === null)) throw new ApiError(422, 'validation_failed', 'Manager approval evidence is incomplete.')
@@ -110,7 +111,7 @@ export function validateOperation(raw: unknown) {
   return { operationId, storeId, items: parsedItems, totals,
     order: { customer_id: customerId, receipt_number: text(order.receipt_number, 'Receipt number', 100),
       catalog_version: order.catalog_version as number,
-      client_generated_at: generatedAt, manager_id: managerId, manager_approved_at: managerApprovedAt },
+      client_generated_at: generatedAt, employee_id: employeeId, manager_id: managerId, manager_approved_at: managerApprovedAt },
     payment: { id: id(payment.id, 'Payment ID'), method, amount_cents: amount,
       tendered_cents: tendered, change_cents: change,
       reference: payment.reference === null || payment.reference === undefined ? null : text(payment.reference, 'Card reference', 120) } }
@@ -122,6 +123,12 @@ async function push(req: import('express').Request, res: import('express').Respo
     if (terminal) {
       const session = await requireDeviceTerminal(req, db)
       if (session.storeId !== operation.storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+      // Prefer the currently authenticated cashier's identity over whatever the client sent, so a
+      // sale can't be attributed to a different employee than the one actually unlocked on this
+      // device. A device-only session (queued sale synced after logout) has no cashier to check
+      // against, so it falls back to the client-sent value's best-effort existence check below.
+      try { operation.order.employee_id = (await requireCashierTerminal(req, db)).employeeId }
+      catch { /* no active cashier session on this device right now */ }
     } else await requireStoreMember(req, operation.storeId)
     const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex')
     const client = await db.connect()
@@ -150,6 +157,14 @@ async function push(req: import('express').Request, res: import('express').Respo
           operation.order.customer_id = null
         }
       }
+      if (operation.order.employee_id) {
+        const employee = await client.query('select 1 from public.terminal_employees where store_id=$1 and id=$2', [operation.storeId, operation.order.employee_id])
+        if (!employee.rowCount) {
+          // Employee record was removed or never synced — accept the order without cashier
+          // attribution rather than blocking this paid sale from syncing permanently.
+          operation.order.employee_id = null
+        }
+      }
       if (operation.order.manager_id) {
         const manager = await client.query(
           "select 1 from public.terminal_employees where store_id=$1 and id=$2 and role='manager' and active=true",
@@ -157,12 +172,12 @@ async function push(req: import('express').Request, res: import('express').Respo
         if (!manager.rowCount) throw new ApiError(422, 'validation_failed', 'Manager approval references an employee who is not an active manager for this store.')
       }
       await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
-        subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id,manager_id,manager_approved_at)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id,employee_id,manager_id,manager_approved_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
         [operation.operationId, operation.storeId, operation.order.receipt_number, store.rows[0].currency,
           store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.discountCents, operation.totals.taxCents,
           operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id,
-          operation.order.manager_id, operation.order.manager_approved_at])
+          operation.order.employee_id, operation.order.manager_id, operation.order.manager_approved_at])
       for (const item of operation.items) {
         await client.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
           snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,discount_kind,discount_value,
