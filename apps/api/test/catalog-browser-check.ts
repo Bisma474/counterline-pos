@@ -120,6 +120,12 @@ try {
   await drawer.getByLabel('Barcode').fill('CB010001')
   await drawer.getByLabel('Category').selectOption({ label: '+ Create new category…' })
   await drawer.getByPlaceholder('Category name (e.g. Specialty Beverages)').fill('Cold Beverages')
+  // New stores get zero tax rates (202609190002_remove_demo_catalog_seed.sql removed the only
+  // insert that ever created one) and there was no way to add one until now — exercise it here,
+  // the same way a brand-new category is created inline above.
+  await drawer.getByLabel('Tax rate').selectOption({ label: '+ Create new tax rate…' })
+  await drawer.getByPlaceholder('Tax rate name (e.g. Sales tax)').fill('State sales tax')
+  await drawer.getByPlaceholder('Percent (e.g. 8.5)').fill('8.5')
   await drawer.getByLabel('Unit price').fill('12.50')
   await drawer.getByLabel('Initial stock').fill('10')
   const createResponse = page.waitForResponse(response => response.url().includes('/catalog/products') && response.request().method() === 'POST')
@@ -133,10 +139,16 @@ try {
   await expect(newRow.getByText('Cold Beverages')).toBeVisible()
 
   // 6. Verify the transaction actually committed: pos_products, pos_stock, and the change feed
-  const created = await database.query<{ id: string; unit_price_cents: string }>(
-    'select id, unit_price_cents::text as unit_price_cents from public.pos_products where store_id=$1 and sku=$2', [store, 'BEV-CB-01'])
+  const created = await database.query<{ id: string; unit_price_cents: string; tax_rate_id: string | null }>(
+    'select id, unit_price_cents::text as unit_price_cents, tax_rate_id from public.pos_products where store_id=$1 and sku=$2', [store, 'BEV-CB-01'])
   assert.equal(created.rows.length, 1, 'Product should be committed to pos_products')
   assert.equal(created.rows[0].unit_price_cents, '1250', 'Price must be stored as integer cents (12.50 -> 1250)')
+  assert(created.rows[0].tax_rate_id, 'Product should be linked to the newly created tax rate')
+  const newTaxRate = await database.query<{ name: string; rate_bps: number }>(
+    'select name, rate_bps from public.pos_tax_rates where id=$1', [created.rows[0].tax_rate_id])
+  assert.equal(newTaxRate.rows.length, 1, 'Tax rate should be committed to pos_tax_rates')
+  assert.equal(newTaxRate.rows[0].name, 'State sales tax')
+  assert.equal(newTaxRate.rows[0].rate_bps, 850, 'Percent must convert to basis points (8.5% -> 850 bps)')
   const productId = created.rows[0].id
   const stockRow = await database.query<{ current_stock: number }>(
     'select current_stock from public.pos_stock where store_id=$1 and product_id=$2', [store, productId])

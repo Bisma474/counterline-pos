@@ -22,6 +22,8 @@ interface FormState {
   categoryId: string
   newCategoryName: string
   taxRateId: string
+  newTaxRateName: string
+  newTaxRatePercent: string
   priceDisplay: string
   initialStock: string
 }
@@ -33,6 +35,8 @@ interface FieldErrors {
   price?: string
   initialStock?: string
   newCategoryName?: string
+  newTaxRateName?: string
+  newTaxRatePercent?: string
 }
 
 const EMPTY: FormState = {
@@ -42,6 +46,8 @@ const EMPTY: FormState = {
   categoryId: '',
   newCategoryName: '',
   taxRateId: '',
+  newTaxRateName: '',
+  newTaxRatePercent: '',
   priceDisplay: '',
   initialStock: '0',
 }
@@ -191,6 +197,13 @@ export function ProductCatalogScreen() {
     if (form.categoryId === '__new__' && !form.newCategoryName.trim()) {
       e.newCategoryName = 'Category name required.'
     }
+    if (form.taxRateId === '__new__') {
+      if (!form.newTaxRateName.trim()) e.newTaxRateName = 'Tax rate name required.'
+      const percent = Number(form.newTaxRatePercent)
+      if (!form.newTaxRatePercent.trim() || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+        e.newTaxRatePercent = 'Enter a percent from 0 to 100.'
+      }
+    }
     if (!form.priceDisplay.trim()) {
       e.price = 'Price is required.'
     } else {
@@ -224,6 +237,9 @@ export function ProductCatalogScreen() {
         form.categoryId === '__new__' && form.newCategoryName.trim()
           ? form.newCategoryName.trim()
           : null
+      const finalTaxRateId = form.taxRateId && form.taxRateId !== '__new__' ? form.taxRateId : null
+      const newTaxRateName = form.taxRateId === '__new__' ? form.newTaxRateName.trim() : null
+      const newTaxRateBps = newTaxRateName ? Math.round(Number(form.newTaxRatePercent) * 100) : null
 
       const token = await accessToken()
       const resp = await fetch(`${configuredApiUrl()}/catalog/products`, {
@@ -237,7 +253,9 @@ export function ProductCatalogScreen() {
           barcode: form.barcode.trim() || null,
           category_id: finalCategoryId,
           new_category_name: newCatName,
-          tax_rate_id: form.taxRateId || null,
+          tax_rate_id: finalTaxRateId,
+          new_tax_rate_name: newTaxRateName,
+          new_tax_rate_rate_bps: newTaxRateBps,
           unit_price_cents: priceCents,
           initial_stock: initialStock,
         }),
@@ -257,13 +275,15 @@ export function ProductCatalogScreen() {
         }
         stock?: { product_id: string; current_stock: number }
         category?: { id: string; store_id: string; name: string; active: boolean }
+        taxRate?: { id: string; store_id: string; name: string; rate_bps: number; active: boolean }
         message?: string
       }
       if (!resp.ok) throw new Error(data.message ?? `Server error (${resp.status})`)
       if (!data.product) throw new Error('Server returned no product.')
 
-      await posDb.transaction('rw', [posDb.products, posDb.server_stock, posDb.categories], async () => {
+      await posDb.transaction('rw', [posDb.products, posDb.server_stock, posDb.categories, posDb.tax_rates], async () => {
         if (data.category) await posDb.categories.put({ ...data.category, parent_id: null })
+        if (data.taxRate) await posDb.tax_rates.put(data.taxRate)
         await posDb.products.put({ ...data.product!, unit_price_cents: data.product!.unit_price_cents })
         if (data.stock) {
           await posDb.server_stock.put({
@@ -713,7 +733,31 @@ export function ProductCatalogScreen() {
                           {t.name} — {(t.rate_bps / 100).toFixed(2)}%
                         </option>
                       ))}
+                    <option value="__new__">+ Create new tax rate…</option>
                   </select>
+                  {form.taxRateId === '__new__' && (
+                    <div className="pc-newtax">
+                      <input
+                        className={errs.newTaxRateName ? 'err' : ''}
+                        type="text"
+                        placeholder="Tax rate name (e.g. Sales tax)"
+                        value={form.newTaxRateName}
+                        onChange={(e) => setField('newTaxRateName', e.target.value)}
+                        maxLength={80}
+                        autoComplete="off"
+                      />
+                      <input
+                        className={errs.newTaxRatePercent ? 'err' : ''}
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Percent (e.g. 8.5)"
+                        value={form.newTaxRatePercent}
+                        onChange={(e) => setField('newTaxRatePercent', e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {errs.newTaxRateName && <p className="pc-field-err">{errs.newTaxRateName}</p>}
+                  {errs.newTaxRatePercent && <p className="pc-field-err">{errs.newTaxRatePercent}</p>}
                 </div>
               </div>
 
