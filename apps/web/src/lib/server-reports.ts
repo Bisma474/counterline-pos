@@ -33,6 +33,8 @@ export interface ServerDailySummary {
   completedOrderCount: number
   averageSaleCents: number
   itemsSold: number
+  refundedCount: number
+  refundedAmountCents: number
 }
 
 export function fetchDailySummary(storeId: string, date: string): Promise<ServerDailySummary> {
@@ -49,6 +51,7 @@ export interface ServerOrderSummary {
   syncStatus: 'synced'
   employeeId: string | null
   cashierName: string | null
+  refunded: boolean
 }
 export interface ServerOrdersPage { orders: ServerOrderSummary[]; next_cursor: string | null }
 

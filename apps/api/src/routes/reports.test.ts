@@ -54,6 +54,7 @@ const chain = [
   '202609170002_cart_discounts.sql',
   '202609180001_terminal_name_uniqueness.sql',
   '202609180002_pos_orders_report_read_access.sql',
+  '202609180005_refunds.sql',
 ]
 
 test('loadDailySummary aggregates orders, items and payments within the store timezone day', async () => {
@@ -90,8 +91,9 @@ test('loadDailySummary aggregates orders, items and payments within the store ti
         values ($1,$2,$3,$4,'Test item','SKU-1',500,500,1,2,500,0,500,25,525)`, [randomUUID(), store, id, product])
       await database.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,client_generated_at)
         values ($1,$2,$3,'cash',525,525,0,$4)`, [randomUUID(), store, id, generatedAtUtc])
+      return id
     }
-    await insertOrder('DS-000001', '2026-09-18T10:00:00.000Z') // 15:00 local on the 18th
+    const firstOrderId = await insertOrder('DS-000001', '2026-09-18T10:00:00.000Z') // 15:00 local on the 18th
     await insertOrder('DS-000002', '2026-09-18T20:00:00.000Z') // 01:00 local on the 19th — excluded
 
     const summary = await loadDailySummary(store, '2026-09-18')
@@ -103,10 +105,33 @@ test('loadDailySummary aggregates orders, items and payments within the store ti
     assert.equal(summary.cardTakingsCents, 0)
     assert.equal(summary.itemsSold, 2)
     assert.equal(summary.averageSaleCents, 525)
+    assert.equal(summary.refundedCount, 0)
+
+    await database.query(`insert into public.pos_refunds(store_id,order_id,amount_cents,refunded_by,created_at)
+      values ($1,$2,525,$3,'2026-09-18T11:00:00.000Z')`, [store, firstOrderId, owner])
+    const afterRefund = await loadDailySummary(store, '2026-09-18')
+    assert.equal(afterRefund.completedOrderCount, 1)
+    assert.equal(afterRefund.grossSalesCents, 500)
+    assert.equal(afterRefund.netSalesCents, 0)
+    assert.equal(afterRefund.recordedTotalCents, 0)
+    assert.equal(afterRefund.cashTakingsCents, 0)
+    assert.equal(afterRefund.taxCents, 0)
+    assert.equal(afterRefund.itemsSold, 2)
+    assert.equal(afterRefund.averageSaleCents, 525)
+    assert.equal(afterRefund.refundedCount, 1)
+    assert.equal(afterRefund.refundedAmountCents, 525)
 
     const nextDay = await loadDailySummary(store, '2026-09-19')
     assert.equal(nextDay.completedOrderCount, 1)
     assert.equal(nextDay.recordedTotalCents, 525)
+    await database.query("update public.pos_refunds set created_at='2026-09-18T20:30:00.000Z' where order_id=$1", [firstOrderId])
+    const saleDay = await loadDailySummary(store, '2026-09-18')
+    assert.equal(saleDay.recordedTotalCents, 525, 'the original sale day stays intact')
+    const refundDay = await loadDailySummary(store, '2026-09-19')
+    assert.equal(refundDay.completedOrderCount, 1)
+    assert.equal(refundDay.grossSalesCents, 500)
+    assert.equal(refundDay.recordedTotalCents, 0, 'today’s refund offsets today’s sale')
+    assert.equal(refundDay.refundedCount, 1)
   } finally { await database.close() }
 })
 

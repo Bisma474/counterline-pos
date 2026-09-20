@@ -241,7 +241,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       <div className="catalog-grid">{visible.map(product => <button type="button" className="catalog-card" key={product.id}
         disabled={Boolean(product.tax_rate_id && taxRates[product.tax_rate_id] === undefined)}
         onClick={() => addProductToCart(product)}>
-        <div className="product-art" aria-hidden="true" /><strong>{product.name}</strong>
+        {product.image_url ? <img className="product-art-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="product-art" aria-hidden="true" />}<strong>{product.name}</strong>
         <span>{formatCents(product.unit_price_cents, currency)}</span><small>{stock[product.id] ?? 0} in stock · {product.sku}</small>
       </button>)}</div>
     </div>

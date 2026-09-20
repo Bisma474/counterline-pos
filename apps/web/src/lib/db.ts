@@ -49,6 +49,7 @@ export interface LocalProduct {
   unit_price_cents: number   // integer cents
   active: boolean
   revision: number
+  image_url?: string | null  // optional; absent on older records means no image — show a placeholder
 }
 
 export interface LocalStock {
@@ -79,6 +80,8 @@ export interface LocalOrder {
   employee_id?: string | null         // cashier who rang up the sale, when checked out on a terminal
   manager_id?: string | null          // approving manager's employee id, when any line needed approval
   manager_approved_at?: string | null // ISO 8601, when any line needed approval
+  refunded_at?: string | null         // ISO 8601; set locally right after POST /orders/:id/refund succeeds
+  refunded_amount_cents?: number | null // integer cents; the whole-order amount reversed
 }
 
 export interface LocalCustomer {

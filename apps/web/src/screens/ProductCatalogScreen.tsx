@@ -11,6 +11,9 @@ import { liveQuery } from 'dexie'
 import { formatCents, parseCents } from '../../../../packages/domain/src/money'
 import { posDb, type LocalCategory, type LocalProduct, type LocalTaxRate } from '../lib/db'
 import { activeStoreId, accessToken, configuredApiUrl, loadCatalog } from '../lib/catalog'
+import { requireSupabase } from '../lib/supabase'
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 import './product-catalog.css'
 
 type StockMap = Record<string, number>
@@ -52,6 +55,19 @@ const EMPTY: FormState = {
   initialStock: '0',
 }
 
+// A tax rate percentage input ("8.25") converted to bounded integer basis points (0-10000),
+// mirroring parseCents' strictness so a malformed or out-of-range rate is rejected client-side
+// before it ever reaches the server.
+function parseRateBps(input: string): number {
+  const normalized = input.trim()
+  if (!/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new Error('Enter a percentage between 0 and 100 with up to two decimal places.')
+  }
+  const bps = Math.round(Number(normalized) * 100)
+  if (!Number.isInteger(bps) || bps < 0 || bps > 10_000) throw new Error('Tax rate must be between 0% and 100%.')
+  return bps
+}
+
 export function ProductCatalogScreen() {
   const [products, setProducts] = useState<LocalProduct[] | null>(null)
   const [categories, setCategories] = useState<LocalCategory[]>([])
@@ -70,7 +86,26 @@ export function ProductCatalogScreen() {
   const [notice, setNotice] = useState('')
   const [loadErr, setLoadErr] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imageError, setImageError] = useState('')
   const firstRef = useRef<HTMLInputElement>(null)
+
+  const handleImagePick = (file: File | null) => {
+    setImageError('')
+    if (!file) {
+      setImageFile(null)
+      return
+    }
+    if (!file.type.startsWith('image/')) {
+      setImageError('Choose an image file.')
+      return
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError('Image must be 5MB or smaller.')
+      return
+    }
+    setImageFile(file)
+  }
 
   // Bootstrap store context
   useEffect(() => {
@@ -199,9 +234,14 @@ export function ProductCatalogScreen() {
     }
     if (form.taxRateId === '__new__') {
       if (!form.newTaxRateName.trim()) e.newTaxRateName = 'Tax rate name required.'
-      const percent = Number(form.newTaxRatePercent)
-      if (!form.newTaxRatePercent.trim() || !Number.isFinite(percent) || percent < 0 || percent > 100) {
-        e.newTaxRatePercent = 'Enter a percent from 0 to 100.'
+      if (!form.newTaxRatePercent.trim()) {
+        e.newTaxRatePercent = 'Tax rate percentage required.'
+      } else {
+        try {
+          parseRateBps(form.newTaxRatePercent)
+        } catch (err) {
+          e.newTaxRatePercent = err instanceof Error ? err.message : 'Invalid tax rate.'
+        }
       }
     }
     if (!form.priceDisplay.trim()) {
@@ -242,6 +282,23 @@ export function ProductCatalogScreen() {
       const newTaxRateBps = newTaxRateName ? Math.round(Number(form.newTaxRatePercent) * 100) : null
 
       const token = await accessToken()
+
+      // Product images upload straight to Supabase Storage from the browser (publishable key +
+      // RLS, same pattern the rest of the app uses for anything Supabase-authenticated) rather
+      // than through our API — the API never needs to see the file itself, only the resulting
+      // public URL. Path is "{store_id}/{uuid}.{ext}" so the storage RLS policy can check
+      // is_store_admin() against the folder's store_id.
+      let imageUrl: string | null = null
+      if (imageFile) {
+        const extension = (imageFile.name.split('.').pop() ?? 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+        const path = `${storeId}/${crypto.randomUUID()}.${extension}`
+        const { error: uploadError } = await requireSupabase().storage
+          .from('product-images')
+          .upload(path, imageFile, { cacheControl: '3600', upsert: false, contentType: imageFile.type })
+        if (uploadError) throw new Error(uploadError.message || 'Could not upload the product image.')
+        imageUrl = requireSupabase().storage.from('product-images').getPublicUrl(path).data.publicUrl
+      }
+
       const resp = await fetch(`${configuredApiUrl()}/catalog/products`, {
         method: 'POST',
         credentials: 'same-origin',
@@ -254,6 +311,7 @@ export function ProductCatalogScreen() {
           category_id: finalCategoryId,
           new_category_name: newCatName,
           tax_rate_id: finalTaxRateId,
+          image_url: imageUrl,
           new_tax_rate_name: newTaxRateName,
           new_tax_rate_rate_bps: newTaxRateBps,
           unit_price_cents: priceCents,
@@ -272,6 +330,7 @@ export function ProductCatalogScreen() {
           unit_price_cents: number
           active: boolean
           revision: number
+          image_url: string | null
         }
         stock?: { product_id: string; current_stock: number }
         category?: { id: string; store_id: string; name: string; active: boolean }
@@ -298,6 +357,8 @@ export function ProductCatalogScreen() {
       setDrawerOpen(false)
       setForm(EMPTY)
       setErrs({})
+      setImageFile(null)
+      setImageError('')
     } catch (err) {
       setSubmitErr(err instanceof Error ? err.message : 'Could not create product.')
     } finally {
@@ -327,6 +388,8 @@ export function ProductCatalogScreen() {
       setDrawerOpen(false)
       setForm(EMPTY)
       setErrs({})
+      setImageFile(null)
+      setImageError('')
     }
   }
 
@@ -553,7 +616,11 @@ export function ProductCatalogScreen() {
               return (
                 <div key={product.id} className="pc-row" role="row">
                   <div className="pc-cell-product" role="cell">
-                    <div className="pc-avatar" aria-hidden="true">{initial}</div>
+                    {product.image_url ? (
+                      <img className="pc-avatar-img" src={product.image_url} alt="" aria-hidden="true" />
+                    ) : (
+                      <div className="pc-avatar" aria-hidden="true">{initial}</div>
+                    )}
                     <div style={{ minWidth: 0 }}>
                       <div className="pc-prod-name" title={product.name}>{product.name}</div>
                       <div className="pc-prod-sku">{product.sku}</div>
@@ -801,6 +868,29 @@ export function ProductCatalogScreen() {
                     />
                     {errs.initialStock && <p className="pc-field-err">{errs.initialStock}</p>}
                   </div>
+                </div>
+              </div>
+
+              {/* Group 4: Product Image */}
+              <div className="pc-group">
+                <p className="pc-group-label">Product Image</p>
+                <div className="pc-field">
+                  <label htmlFor="pf-image">
+                    Photo <span className="pc-opt">optional</span>
+                  </label>
+                  <input
+                    id="pf-image"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleImagePick(e.target.files?.[0] ?? null)}
+                  />
+                  {imageError ? (
+                    <p className="pc-field-err">{imageError}</p>
+                  ) : imageFile ? (
+                    <p className="pc-field-hint">{imageFile.name} selected. Shown on the register once saved.</p>
+                  ) : (
+                    <p className="pc-field-hint">Shown in the catalog and on the register. Falls back to a placeholder when absent.</p>
+                  )}
                 </div>
               </div>
             </div>

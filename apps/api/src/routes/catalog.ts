@@ -1,13 +1,7 @@
-import { Router, type Request } from 'express'
+import { Router } from 'express'
 import { db } from '../db.js'
-import { requireStoreMember, sendApiError, ApiError } from './auth.js'
+import { requireStoreMember, requireStoreManager, sendApiError, ApiError } from './auth.js'
 import { requireCashierTerminal } from '../terminal-auth/routes.js'
-
-async function requireCatalogManager(req: Request, storeId: string): Promise<void> {
-  const userId = await requireStoreMember(req, storeId)
-  const result = await db.query<{ role: string }>('select role from public.store_memberships where store_id=$1 and user_id=$2 and active=true', [storeId, userId])
-  if (!['owner', 'manager'].includes(result.rows[0]?.role ?? '')) throw new ApiError(403, 'authorization_failed', 'Product catalog management requires an owner or manager role.')
-}
 
 async function snapshot(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
@@ -25,7 +19,7 @@ async function snapshot(req: import('express').Request, res: import('express').R
       const store = await client.query('select id,name,timezone,currency from public.stores where id = $1', [storeId])
       const categories = await client.query('select id,store_id,name,active from public.pos_categories where store_id = $1 order by name', [storeId])
       const taxRates = await client.query('select id,store_id,name,rate_bps,active from public.pos_tax_rates where store_id = $1', [storeId])
-      const products = await client.query('select id,store_id,sku,barcode,name,category_id,tax_rate_id,unit_price_cents::text,active,revision::text from public.pos_products where store_id = $1 order by name', [storeId])
+      const products = await client.query('select id,store_id,sku,barcode,name,category_id,tax_rate_id,unit_price_cents::text,active,revision::text,image_url from public.pos_products where store_id = $1 order by name', [storeId])
       const stock = await client.query('select product_id,current_stock,updated_at from public.pos_stock where store_id = $1', [storeId])
       await client.query('commit')
       res.json({ store: store.rows[0], catalog_version: 1, checkpoint: feed.rows[0].last_position,
@@ -46,7 +40,7 @@ async function createProduct(req: import('express').Request, res: import('expres
     const storeId = String(body.store_id ?? '')
     if (!UUID_RE.test(storeId)) throw new ApiError(400, 'validation_failed', 'A valid store_id UUID is required.')
 
-    await requireCatalogManager(req, storeId)
+    await requireStoreManager(req, storeId)
 
     // Validate name
     const name = String(body.name ?? '').trim()
@@ -61,6 +55,14 @@ async function createProduct(req: import('express').Request, res: import('expres
       ? String(body.barcode).trim() : null
     if (rawBarcode !== null && (!/^[A-Za-z0-9]+$/.test(rawBarcode) || rawBarcode.length > 80)) {
       throw new ApiError(422, 'validation_failed', 'Barcode must be alphanumeric, 1–80 characters.')
+    }
+
+    // Validate optional image URL (the browser uploads directly to Supabase Storage and sends back
+    // the resulting public URL — this never receives a file, just the string).
+    const rawImageUrl = body.image_url !== undefined && body.image_url !== null && String(body.image_url).trim() !== ''
+      ? String(body.image_url).trim() : null
+    if (rawImageUrl !== null && (rawImageUrl.length > 2048 || !/^https?:\/\//i.test(rawImageUrl))) {
+      throw new ApiError(422, 'validation_failed', 'image_url must be an http(s) URL of 2048 characters or fewer.')
     }
 
     // Validate optional FK references
@@ -186,11 +188,11 @@ async function createProduct(req: import('express').Request, res: import('expres
       try {
         productRes = await client.query(
           `insert into public.pos_products
-            (store_id, sku, barcode, name, category_id, tax_rate_id, unit_price_cents, active, revision)
-           values ($1,$2,$3,$4,$5,$6,$7,true,1)
+            (store_id, sku, barcode, name, category_id, tax_rate_id, unit_price_cents, active, revision, image_url)
+           values ($1,$2,$3,$4,$5,$6,$7,true,1,$8)
            returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
-                     unit_price_cents::text as unit_price_cents, active, revision::text as revision`,
-          [storeId, sku, rawBarcode, name, resolvedCategoryId, resolvedTaxRateId, priceCents],
+                     unit_price_cents::text as unit_price_cents, active, revision::text as revision, image_url`,
+          [storeId, sku, rawBarcode, name, resolvedCategoryId, resolvedTaxRateId, priceCents, rawImageUrl],
         )
       } catch (insertReason) {
         if (typeof insertReason === 'object' && insertReason !== null && 'code' in insertReason && (insertReason as { code: string }).code === '23505') {
@@ -201,7 +203,7 @@ async function createProduct(req: import('express').Request, res: import('expres
       const row = productRes.rows[0] as {
         id: string; store_id: string; sku: string; barcode: string | null
         name: string; category_id: string | null; tax_rate_id: string | null
-        unit_price_cents: string; active: boolean; revision: string
+        unit_price_cents: string; active: boolean; revision: string; image_url: string | null
       }
 
       // Insert stock
@@ -229,7 +231,7 @@ async function createProduct(req: import('express').Request, res: import('expres
       const feedPayload = JSON.stringify({
         product: { id: row.id, store_id: row.store_id, sku: row.sku, barcode: row.barcode,
           name: row.name, category_id: row.category_id, tax_rate_id: row.tax_rate_id,
-          unit_price_cents: priceCents, active: true, revision: 1 },
+          unit_price_cents: priceCents, active: true, revision: 1, image_url: row.image_url },
         stock: { product_id: row.id, current_stock: initialStock },
       })
       await client.query(
@@ -243,7 +245,7 @@ async function createProduct(req: import('express').Request, res: import('expres
       res.status(201).json({
         product: { id: row.id, store_id: row.store_id, sku: row.sku, barcode: row.barcode,
           name: row.name, category_id: row.category_id, tax_rate_id: row.tax_rate_id,
-          unit_price_cents: priceCents, active: row.active, revision: 1 },
+          unit_price_cents: priceCents, active: row.active, revision: 1, image_url: row.image_url },
         stock: { product_id: row.id, current_stock: initialStock },
         ...(createdCategory ? { category: createdCategory } : {}),
         ...(createdTaxRate ? { taxRate: createdTaxRate } : {}),

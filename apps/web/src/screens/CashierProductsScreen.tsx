@@ -133,7 +133,7 @@ export function CashierProductsScreen() {
           const stockLabel = level > 5 ? `${level} in stock` : level > 0 ? `${level} left` : 'Out of stock'
           const pillLabel = level > 5 ? 'In Stock' : level > 0 ? 'Low Stock' : 'Out of Stock'
           return <div key={product.id} className="pc-row" role="row">
-            <div className="pc-cell-product" role="cell"><div className="pc-avatar" aria-hidden="true">{initial}</div>
+            <div className="pc-cell-product" role="cell">{product.image_url ? <img className="pc-avatar-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="pc-avatar" aria-hidden="true">{initial}</div>}
               <div style={{ minWidth: 0 }}><div className="pc-prod-name" title={product.name}>{product.name}</div><div className="pc-prod-sku">{product.sku}</div></div></div>
             <div className="pc-cell-code" role="cell">{product.barcode || '—'}</div>
             <div className="pc-cell" role="cell"><span className={`pc-badge ${catName ? '' : 'empty'}`}>{catName || 'Unassigned'}</span></div>

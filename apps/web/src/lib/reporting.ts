@@ -15,6 +15,8 @@ export interface LocalSalesReport {
   pendingAmountCents: number
   rejectedCount: number
   rejectedAmountCents: number
+  refundedCount: number
+  refundedAmountCents: number
 }
 
 export interface ReportingData {
@@ -29,6 +31,7 @@ const emptyReport = (): LocalSalesReport => ({
   cashTakingsCents: 0, cardTakingsCents: 0, recordedTotalCents: 0,
   completedOrderCount: 0, averageSaleCents: 0, itemsSold: 0,
   pendingCount: 0, pendingAmountCents: 0, rejectedCount: 0, rejectedAmountCents: 0,
+  refundedCount: 0, refundedAmountCents: 0,
 })
 
 export function calendarDay(instant: string, timezone: string): string {
@@ -47,12 +50,13 @@ export function todayInTimezone(timezone: string, now = new Date()): string {
 
 export function calculateLocalSalesReport(storeId: string, day: string, timezone: string, data: ReportingData): LocalSalesReport {
   const report = emptyReport()
-  const orders = data.orders.filter(order => order.store_id === storeId && calendarDay(order.client_generated_at, timezone) === day)
-  if (!orders.length) return report
-  const orderIds = new Set(orders.map(order => order.id))
+  const dayOrders = data.orders.filter(order => order.store_id === storeId && calendarDay(order.client_generated_at, timezone) === day)
+  const refundsToday = data.orders.filter(order => order.store_id === storeId && order.refunded_at && calendarDay(order.refunded_at, timezone) === day)
+  if (!dayOrders.length && !refundsToday.length) return report
+  const orderIds = new Set(dayOrders.map(order => order.id))
   const outboxByOrder = new Map(data.outbox.filter(entry => entry.store_id === storeId && orderIds.has(entry.order_id)).map(entry => [entry.order_id, entry]))
 
-  for (const order of orders) {
+  for (const order of dayOrders) {
     const discount = order.discount_cents ?? 0
     report.grossSalesCents += order.subtotal_cents
     report.discountCents += discount
@@ -78,8 +82,21 @@ export function calculateLocalSalesReport(storeId: string, day: string, timezone
     if (payment.method === 'cash') report.cashTakingsCents += payment.amount_cents
     if (payment.method === 'card') report.cardTakingsCents += payment.amount_cents
   }
+  const paymentByOrder = new Map(data.payments.map(payment => [payment.order_id, payment]))
+  for (const order of refundsToday) {
+    const amount = order.refunded_amount_cents ?? order.total_cents
+    report.refundedCount += 1
+    report.refundedAmountCents += amount
+    report.netSalesCents -= order.subtotal_cents - (order.discount_cents ?? 0)
+    report.taxCents -= order.tax_cents
+    report.recordedTotalCents -= amount
+    const payment = paymentByOrder.get(order.id)
+    if (payment?.method === 'cash') report.cashTakingsCents -= amount
+    if (payment?.method === 'card') report.cardTakingsCents -= amount
+  }
+  const originalTotal = dayOrders.reduce((sum, order) => sum + order.total_cents, 0)
   report.averageSaleCents = report.completedOrderCount
-    ? Math.floor((report.recordedTotalCents + Math.floor(report.completedOrderCount / 2)) / report.completedOrderCount)
+    ? Math.floor((originalTotal + Math.floor(report.completedOrderCount / 2)) / report.completedOrderCount)
     : 0
   return report
 }
@@ -145,6 +162,7 @@ export interface RecentOrderSummary {
   paymentMethod: 'cash' | 'card' | 'unknown'
   itemCount: number
   syncStatus: 'synced' | 'pending' | 'failed'
+  refunded: boolean
 }
 
 export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], payments: LocalPayment[], storeId: string, limit = 5): RecentOrderSummary[] {
@@ -165,6 +183,7 @@ export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], p
     paymentMethod: paymentMap.get(o.id) ?? 'unknown',
     itemCount: itemCountMap.get(o.id) ?? 0,
     syncStatus: o.sync_status,
+    refunded: Boolean(o.refunded_at),
   }))
 }
 
@@ -185,6 +204,7 @@ export function calculateCashierShift(
 ): CashierShiftSummary {
   const todayOrders = orders.filter(o => o.store_id === storeId && calendarDay(o.client_generated_at, timezone) === day)
   const orderIds = new Set(todayOrders.map(o => o.id))
+  const refundsToday = orders.filter(o => o.store_id === storeId && o.refunded_at && calendarDay(o.refunded_at, timezone) === day)
   let cashCents = 0
   let cardCents = 0
   let changeCents = 0
@@ -197,7 +217,15 @@ export function calculateCashierShift(
       cardCents += p.amount_cents
     }
   }
+  const paymentByOrder = new Map(payments.map(payment => [payment.order_id, payment]))
+  for (const order of refundsToday) {
+    const amount = order.refunded_amount_cents ?? order.total_cents
+    const payment = paymentByOrder.get(order.id)
+    if (payment?.method === 'cash') cashCents -= amount
+    if (payment?.method === 'card') cardCents -= amount
+  }
   const salesCents = todayOrders.reduce((sum, o) => sum + o.total_cents, 0)
+    - refundsToday.reduce((sum, o) => sum + (o.refunded_amount_cents ?? o.total_cents), 0)
   return {
     salesCents,
     orderCount: todayOrders.length,

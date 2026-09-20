@@ -412,7 +412,7 @@ components:
             client_generated_at: { type: string, format: date-time }
     DailySummary:
       type: object
-      required: [grossSalesCents, discountCents, netSalesCents, taxCents, cashTakingsCents, cardTakingsCents, recordedTotalCents, completedOrderCount, averageSaleCents, itemsSold]
+      required: [grossSalesCents, discountCents, netSalesCents, taxCents, cashTakingsCents, cardTakingsCents, recordedTotalCents, completedOrderCount, averageSaleCents, itemsSold, refundedCount, refundedAmountCents]
       description: Field names match LocalSalesReport in apps/web/src/lib/reporting.ts so the frontend can consume either shape uniformly.
       properties:
         grossSalesCents: { type: integer }
@@ -425,9 +425,11 @@ components:
         completedOrderCount: { type: integer }
         averageSaleCents: { type: integer }
         itemsSold: { type: integer }
+        refundedCount: { type: integer }
+        refundedAmountCents: { type: integer }
     ReportOrderSummary:
       type: object
-      required: [id, receiptNumber, time, totalCents, paymentMethod, itemCount, syncStatus, employeeId, cashierName]
+      required: [id, receiptNumber, time, totalCents, paymentMethod, itemCount, syncStatus, employeeId, cashierName, refunded]
       properties:
         id: { type: string, format: uuid }
         receiptNumber: { type: string }
@@ -438,6 +440,7 @@ components:
         syncStatus: { type: string, enum: [synced] }
         employeeId: { type: string, format: uuid, nullable: true }
         cashierName: { type: string, nullable: true }
+        refunded: { type: boolean }
     ReportOrdersPage:
       type: object
       required: [orders, next_cursor]

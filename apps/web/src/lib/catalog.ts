@@ -11,6 +11,39 @@ export async function accessToken(): Promise<string> {
   if (error || !data.session?.access_token) throw new Error('Sign in before syncing this store.')
   return data.session.access_token
 }
+export interface ActiveStoreOption { store_id: string; store_name: string; role: string }
+
+/**
+ * Every store this account currently has active membership in, oldest joined first.
+ * Two plain queries rather than a PostgREST embedded join (`stores(name)`) — matches the proven
+ * pattern ManagerSetup.tsx already uses for the same "list my stores" need, instead of relying on
+ * embed syntax that was never actually verified against a real project.
+ */
+export async function listActiveStores(): Promise<ActiveStoreOption[]> {
+  const client = requireSupabase()
+  const { data: userResult, error: userError } = await client.auth.getUser()
+  if (userError || !userResult.user) throw new Error('Sign in to load your stores.')
+  const { data: memberships, error: membershipError } = await client
+    .from('store_memberships')
+    .select('store_id, role')
+    .eq('user_id', userResult.user.id)
+    .eq('active', true)
+    .order('joined_at')
+  if (membershipError) throw membershipError
+  if (!memberships?.length) return []
+  const { data: stores, error: storeError } = await client
+    .from('stores')
+    .select('id, name')
+    .in('id', memberships.map(membership => membership.store_id))
+  if (storeError) throw storeError
+  const names = new Map((stores ?? []).map(store => [store.id as string, store.name as string]))
+  return memberships.map(membership => ({
+    store_id: membership.store_id as string,
+    role: membership.role as string,
+    store_name: names.get(membership.store_id as string) ?? '',
+  }))
+}
+
 export async function activeStoreId(): Promise<string> {
   const client = requireSupabase()
   const { data: sessionResult } = await client.auth.getSession()
@@ -24,12 +57,31 @@ export async function activeStoreId(): Promise<string> {
   }
   const { data: userResult, error: userError } = await client.auth.getUser()
   if (userError || !userResult.user) throw new Error('Sign in to load a store.')
-  const { data, error } = await client.from('store_memberships').select('store_id').eq('user_id', userResult.user.id).eq('active', true).limit(1)
+  const { data, error } = await client.from('store_memberships').select('store_id').eq('user_id', userResult.user.id).eq('active', true).order('joined_at')
   if (error) throw error
-  if (!data?.[0]) throw new Error('No active store membership was found.')
-  const storeId = data[0].store_id as string
+  const memberships = (data ?? []).map(row => row.store_id as string)
+  if (!memberships.length) throw new Error('No active store membership was found.')
+
+  // Respect a previously chosen store instead of re-picking on every call — blindly re-querying
+  // "any active membership, limit 1" on every call let a multi-store user's active store silently
+  // flip between screens with no stable ordering guarantee. Only fall back to a deterministic
+  // default (the membership joined earliest) when there is no saved choice yet, or the saved store
+  // is no longer one this account belongs to (e.g. they were removed from it).
+  const saved = await posDb.sync_metadata.get(cacheKey)
+  const storeId = saved?.value && memberships.includes(saved.value) ? saved.value : memberships[0]
   await posDb.sync_metadata.put({ key: cacheKey, value: storeId })
   return storeId
+}
+
+/** Persists the user's chosen store so activeStoreId() stops re-picking on the next call. */
+export async function setActiveStoreId(storeId: string): Promise<void> {
+  const client = requireSupabase()
+  const { data: sessionResult } = await client.auth.getSession()
+  const sessionUser = sessionResult.session?.user
+  if (!sessionUser) throw new Error('Sign in to switch stores.')
+  const options = await listActiveStores()
+  if (!options.some(option => option.store_id === storeId)) throw new Error('You do not have active access to that store.')
+  await posDb.sync_metadata.put({ key: `active_store:${sessionUser.id}`, value: storeId })
 }
 
 type Snapshot = {
