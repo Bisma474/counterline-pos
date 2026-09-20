@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { LocalOrder, LocalOrderItem, LocalPayment, OutboxEntry } from '../src/lib/db'
-import { calculateLocalSalesReport, calendarDay } from '../src/lib/reporting'
+import { calculateLocalSalesReport, calculateCashierShift, calendarDay } from '../src/lib/reporting'
 
 const order = (overrides: Partial<LocalOrder> & Pick<LocalOrder, 'id' | 'store_id' | 'client_generated_at'>): LocalOrder => ({
   receipt_number: `R-${overrides.id}`, subtotal_cents: 1000, tax_cents: 100, total_cents: 1100,
@@ -45,7 +45,7 @@ test('reconciles local sales, excludes cash change, and keeps unresolved sales i
   })
 })
 
-test('a refunded sale is excluded from every total, not just netted out, and counted separately', () => {
+test('a refunded sale remains in gross activity while reducing net totals and takings', () => {
   const orders = [
     order({ id: 'kept', store_id: 'store-a', client_generated_at: '2026-09-16T10:00:00.000Z', subtotal_cents: 1000, tax_cents: 100, total_cents: 1100 }),
     order({ id: 'refunded', store_id: 'store-a', client_generated_at: '2026-09-16T11:00:00.000Z', subtotal_cents: 2000, tax_cents: 200, total_cents: 2200,
@@ -56,14 +56,29 @@ test('a refunded sale is excluded from every total, not just netted out, and cou
     payments: [payment('kept', 'cash', 1100), payment('refunded', 'card', 2200)],
     outbox: [],
   })
-  assert.equal(report.completedOrderCount, 1, 'the refunded order must not count as a completed sale')
-  assert.equal(report.recordedTotalCents, 1100, 'the refunded order must not inflate the recorded total')
-  assert.equal(report.grossSalesCents, 1000)
+  assert.equal(report.completedOrderCount, 2)
+  assert.equal(report.recordedTotalCents, 1100)
+  assert.equal(report.grossSalesCents, 3000)
+  assert.equal(report.netSalesCents, 1000)
   assert.equal(report.taxCents, 100)
-  assert.equal(report.cardTakingsCents, 0, 'the refunded card payment must not count as takings')
-  assert.equal(report.itemsSold, 1, 'the refunded item must not count as sold')
+  assert.equal(report.cardTakingsCents, 0)
+  assert.equal(report.itemsSold, 4, 'gross units preserve the original sale')
+  assert.equal(report.averageSaleCents, 1650)
   assert.equal(report.refundedCount, 1)
   assert.equal(report.refundedAmountCents, 2200)
+  const shift = calculateCashierShift(orders, [payment('kept', 'cash', 1100), payment('refunded', 'card', 2200)], 'store-a', '2026-09-16', 'Asia/Karachi')
+  assert.equal(shift.orderCount, 2)
+  assert.equal(shift.salesCents, 1100)
+  assert.equal(shift.cardCents, 0)
+  const nextDay = calculateLocalSalesReport('store-a', '2026-09-17', 'Asia/Karachi', {
+    orders: orders.map(row => row.id === 'refunded' ? { ...row, refunded_at: '2026-09-17T12:00:00.000Z' } : row),
+    items: [item('kept', 1), item('refunded', 3)],
+    payments: [payment('kept', 'cash', 1100), payment('refunded', 'card', 2200)], outbox: [],
+  })
+  assert.equal(nextDay.grossSalesCents, 0)
+  assert.equal(nextDay.recordedTotalCents, -2200)
+  assert.equal(nextDay.cardTakingsCents, -2200)
+  assert.equal(nextDay.refundedCount, 1)
 })
 
 test('returns integer zero values for a day without orders and treats old discounts as zero', () => {

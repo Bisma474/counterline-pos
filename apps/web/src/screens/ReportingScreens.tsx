@@ -224,7 +224,7 @@ function usePreviousDayTotal(storeId: string | undefined, day: string | undefine
   return previousCents
 }
 
-export interface CashierBreakdownRow { employeeId: string | null; name: string; orderCount: number; totalCents: number }
+export interface CashierBreakdownRow { employeeId: string | null; name: string; orderCount: number; totalCents: number; refundedCount: number; refundedCents: number }
 
 // Sales-by-cashier: pages through the same cross-device /reports/orders drill-down used for remote
 // history restoration, grouping by cashierName/employeeId. Server-only (like the oversold panel) —
@@ -248,18 +248,20 @@ function useCashierBreakdown(storeId: string | undefined, day: string | undefine
         do {
           const page = await fetchOrdersPage(storeId, day, cursor, 200)
           for (const order of page.orders) {
-            if (order.refunded) continue
             const key = order.employeeId ?? 'unassigned'
             const existing = totals.get(key)
             if (existing) {
               existing.orderCount += 1
               existing.totalCents += order.totalCents
+              if (order.refunded) { existing.refundedCount += 1; existing.refundedCents += order.totalCents }
             } else {
               totals.set(key, {
                 employeeId: order.employeeId,
                 name: order.cashierName ?? 'Unassigned',
                 orderCount: 1,
                 totalCents: order.totalCents,
+                refundedCount: order.refunded ? 1 : 0,
+                refundedCents: order.refunded ? order.totalCents : 0,
               })
             }
           }
@@ -346,7 +348,7 @@ export function OwnerDashboardScreen() {
           delta={previousDayTotal === undefined ? undefined : <DeltaBadge current={report.recordedTotalCents} previous={previousDayTotal} />}
         />
         <ReportCard label="Completed orders" value={report.completedOrderCount} detail="Saved in this store browser" />
-        <ReportCard label="Average sale" value={<Money cents={report.averageSaleCents} currency={config.currency} />} detail="Recorded total ÷ orders" />
+        <ReportCard label="Average sale" value={<Money cents={report.averageSaleCents} currency={config.currency} />} detail="Original sale total ÷ orders" />
         <ReportCard label="Items sold" value={report.itemsSold} detail="Total units rung up today" />
       </div>
 
@@ -544,11 +546,11 @@ export function ReportsScreen() {
           <div className="report-metrics">
             <ReportLine label="Gross sales" hint="Subtotal before discounts and tax" cents={state.report.grossSalesCents} currency={state.config.currency} />
             <ReportLine label="Discounts" hint="Older records count as zero" cents={state.report.discountCents} currency={state.config.currency} />
-            <ReportLine label="Net sales" hint="Gross sales minus discounts" cents={state.report.netSalesCents} currency={state.config.currency} />
-            <ReportLine label="Tax collected" hint="Recorded tax amounts" cents={state.report.taxCents} currency={state.config.currency} />
-            <ReportLine label="Cash takings" hint="Payment amount; change excluded" cents={state.report.cashTakingsCents} currency={state.config.currency} />
-            <ReportLine label="Card takings" hint="Recorded external-card payments" cents={state.report.cardTakingsCents} currency={state.config.currency} />
-            <ReportLine label="Recorded total" hint={`${state.report.completedOrderCount} completed order${state.report.completedOrderCount === 1 ? '' : 's'} — refunded sales excluded`} cents={state.report.recordedTotalCents} currency={state.config.currency} emphasized />
+            <ReportLine label="Net sales" hint="Gross sales minus discounts and refunded merchandise" cents={state.report.netSalesCents} currency={state.config.currency} />
+            <ReportLine label="Tax collected" hint="Tax after refunds" cents={state.report.taxCents} currency={state.config.currency} />
+            <ReportLine label="Cash takings" hint="Cash received less cash refunds; change excluded" cents={state.report.cashTakingsCents} currency={state.config.currency} />
+            <ReportLine label="Card takings" hint="Card payments less card refunds" cents={state.report.cardTakingsCents} currency={state.config.currency} />
+            <ReportLine label="Recorded total" hint={`${state.report.completedOrderCount} completed order${state.report.completedOrderCount === 1 ? '' : 's'}; refunds deducted`} cents={state.report.recordedTotalCents} currency={state.config.currency} emphasized />
           </div>
           <section className="unresolved-panel">
             <div>
@@ -561,7 +563,7 @@ export function ReportsScreen() {
           <section className="unresolved-panel">
             <div>
               <h2>Refunds</h2>
-              <p>Reversed sales — excluded from every total above, not just netted out of it.</p>
+              <p>Original sales remain in gross figures; refunds reduce net sales and takings.</p>
             </div>
             <StatusAmount label="Refunded" count={state.report.refundedCount} cents={state.report.refundedAmountCents} currency={state.config.currency} rejected />
           </section>
@@ -569,7 +571,7 @@ export function ReportsScreen() {
           <section className="dashboard-panel">
             <div className="panel-header">
               <h2>Sales by cashier</h2>
-              <small>Cross-device totals for {day}</small>
+              <small>Gross sales and refunds across devices for {day}</small>
             </div>
             {cashierError ? (
               <p className="empty-panel-copy">{cashierError}</p>
@@ -581,9 +583,9 @@ export function ReportsScreen() {
                   <li key={row.employeeId ?? 'unassigned'} className="ranked-row">
                     <div className="ranked-details">
                       <strong>{row.name}</strong>
-                      <small>{row.orderCount} {row.orderCount === 1 ? 'sale' : 'sales'}</small>
+                      <small>{row.orderCount} {row.orderCount === 1 ? 'sale' : 'sales'}{row.refundedCount ? ` · ${row.refundedCount} refunded (${formatCents(row.refundedCents, state.config.currency)})` : ''}</small>
                     </div>
-                    <b><Money cents={row.totalCents} currency={state.config.currency} /></b>
+                    <b><Money cents={row.totalCents} currency={state.config.currency} /> gross</b>
                   </li>
                 ))}
               </ul>

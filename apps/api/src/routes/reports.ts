@@ -67,39 +67,45 @@ export async function loadDailySummary(storeId: string, date: string): Promise<D
     db.query<{ gross: string; discount: string; tax: string; total: string; count: string }>(`
       select coalesce(sum(subtotal_cents),0)::text as gross, coalesce(sum(discount_cents),0)::text as discount,
         coalesce(sum(tax_cents),0)::text as tax, coalesce(sum(total_cents),0)::text as total, count(*)::text as count
-      from public.pos_orders o where store_id=$1 and client_generated_at >= $2 and client_generated_at < $3
-        and not exists (select 1 from public.pos_refunds r where r.store_id=o.store_id and r.order_id=o.id)`,
+      from public.pos_orders o where store_id=$1 and client_generated_at >= $2 and client_generated_at < $3`,
       [storeId, startUtc, endUtc]),
     db.query<{ qty: string }>(`
       select coalesce(sum(oi.quantity),0)::text as qty from public.pos_order_items oi
       join public.pos_orders o on o.store_id=oi.store_id and o.id=oi.order_id
-      where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3
-        and not exists (select 1 from public.pos_refunds r where r.store_id=o.store_id and r.order_id=o.id)`,
+      where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3`,
       [storeId, startUtc, endUtc]),
     db.query<{ method: string; amount: string }>(`
       select p.method, coalesce(sum(p.amount_cents),0)::text as amount from public.pos_payments p
       join public.pos_orders o on o.store_id=p.store_id and o.id=p.order_id
       where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3
-        and not exists (select 1 from public.pos_refunds r where r.store_id=o.store_id and r.order_id=o.id)
       group by p.method`, [storeId, startUtc, endUtc]),
-    db.query<{ count: string; amount: string }>(`
-      select count(*)::text as count, coalesce(sum(r.amount_cents),0)::text as amount
+    db.query<{ count: string; amount: string; merchandise: string; tax: string; cash: string; card: string }>(`
+      select count(*)::text as count, coalesce(sum(r.amount_cents),0)::text as amount,
+        coalesce(sum(o.subtotal_cents-o.discount_cents),0)::text as merchandise,
+        coalesce(sum(o.tax_cents),0)::text as tax,
+        coalesce(sum(case when p.method='cash' then r.amount_cents else 0 end),0)::text as cash,
+        coalesce(sum(case when p.method='card' then r.amount_cents else 0 end),0)::text as card
       from public.pos_refunds r join public.pos_orders o on o.store_id=r.store_id and o.id=r.order_id
-      where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3`,
+      left join public.pos_payments p on p.store_id=o.store_id and p.order_id=o.id
+      where r.store_id=$1 and r.created_at >= $2 and r.created_at < $3`,
       [storeId, startUtc, endUtc]),
   ])
   const row = totals.rows[0]
   const grossSalesCents = Number(row.gross), discountCents = Number(row.discount), taxCents = Number(row.tax)
-  const recordedTotalCents = Number(row.total), completedOrderCount = Number(row.count)
-  const cashTakingsCents = Number(payments.rows.find(p => p.method === 'cash')?.amount ?? '0')
-  const cardTakingsCents = Number(payments.rows.find(p => p.method === 'card')?.amount ?? '0')
+  const originalTotalCents = Number(row.total), completedOrderCount = Number(row.count)
+  const refundedAmountCents = Number(refunds.rows[0]?.amount ?? '0')
+  const recordedTotalCents = originalTotalCents - refundedAmountCents
+  const cashTakingsCents = Number(payments.rows.find(p => p.method === 'cash')?.amount ?? '0') - Number(refunds.rows[0]?.cash ?? '0')
+  const cardTakingsCents = Number(payments.rows.find(p => p.method === 'card')?.amount ?? '0') - Number(refunds.rows[0]?.card ?? '0')
   const averageSaleCents = completedOrderCount
-    ? Math.floor((recordedTotalCents + Math.floor(completedOrderCount / 2)) / completedOrderCount)
+    ? Math.floor((originalTotalCents + Math.floor(completedOrderCount / 2)) / completedOrderCount)
     : 0
-  return { grossSalesCents, discountCents, netSalesCents: grossSalesCents - discountCents, taxCents,
+  return { grossSalesCents, discountCents,
+    netSalesCents: grossSalesCents - discountCents - Number(refunds.rows[0]?.merchandise ?? '0'),
+    taxCents: taxCents - Number(refunds.rows[0]?.tax ?? '0'),
     cashTakingsCents, cardTakingsCents, recordedTotalCents, completedOrderCount, averageSaleCents,
     itemsSold: Number(items.rows[0]?.qty ?? '0'),
-    refundedCount: Number(refunds.rows[0]?.count ?? '0'), refundedAmountCents: Number(refunds.rows[0]?.amount ?? '0') }
+    refundedCount: Number(refunds.rows[0]?.count ?? '0'), refundedAmountCents }
 }
 
 async function dailySummaryHandler(req: Request, res: Response) {
