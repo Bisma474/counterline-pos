@@ -23,6 +23,7 @@ import { SyncCenterScreen } from './screens/SyncCenterScreen'
 import { CashierHardwareSettings } from './screens/CashierHardwareSettings'
 import { CashierProductsScreen } from './screens/CashierProductsScreen'
 import { OnboardingWizard } from './onboarding/OnboardingWizard'
+import { activeStoreId, loadCatalog } from './lib/catalog'
 
 const CashierLogin = lazy(() => import('./terminal-auth/CashierLogin').then(module => ({ default: module.CashierLogin })))
 const ManagerSetup = lazy(() => import('./terminal-auth/ManagerSetup').then(module => ({ default: module.ManagerSetup })))
@@ -68,6 +69,13 @@ function SessionProvider({ children }: { children: ReactNode }) {
       .then(() => { if (active) setOnboardingLoading(false) })
     return () => { active = false }
   }, [session])
+  useEffect(() => {
+    if (!session || !navigator.onLine) return
+    // Dexie persists across browser restarts for offline checkout. Rehydrate the account's
+    // server-authorized active store whenever its owner/manager session changes so a second
+    // account on the same browser cannot be shown a stale catalog from an earlier session.
+    void activeStoreId().then(storeId => loadCatalog(storeId)).catch(() => undefined)
+  }, [session?.user.id])
   // The wizard calls this right after the completion RPC succeeds, so ProtectedRoute
   // stops redirecting to /onboarding without waiting on a re-fetch of store state.
   const markOnboardingComplete = () => setNeedsOnboarding(false)
