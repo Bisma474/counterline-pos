@@ -6,6 +6,7 @@ import { request } from './api'
 import { readTerminal, type TerminalCache } from './cache'
 import { TerminalState } from './TerminalStatus'
 import type { Management } from './types'
+import './settings-overview.css'
 
 interface StoreAccess { storeId: string; role: string }
 interface TeamMember { user_id: string; role: string; active: boolean; joined_at: string; profiles: { full_name: string }[] }

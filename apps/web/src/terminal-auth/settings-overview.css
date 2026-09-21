@@ -1,0 +1,7 @@
+.settings-overview .setup-card .cta {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin-right: 0;
+  justify-content: space-between;
+}
