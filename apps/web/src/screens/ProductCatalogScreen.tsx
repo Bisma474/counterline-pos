@@ -209,10 +209,10 @@ export function ProductCatalogScreen() {
   }, [products, catFilter, q])
 
   const total = products?.length ?? 0
-  const inStock = products?.filter((p) => (stockMap[p.id] ?? 0) > 5).length ?? 0
+  const inStock = products?.filter((p) => (stockMap[p.id] ?? 0) > (p.low_stock_threshold ?? 5)).length ?? 0
   const lowStock = products?.filter((p) => {
     const s = stockMap[p.id] ?? 0
-    return s > 0 && s <= 5
+    return s > 0 && s <= (p.low_stock_threshold ?? 5)
   }).length ?? 0
   const outStock = products?.filter((p) => (stockMap[p.id] ?? 0) <= 0).length ?? 0
 
@@ -446,7 +446,7 @@ export function ProductCatalogScreen() {
           <div className="pc-stat">
             <span className="pc-stat-label">Low Stock</span>
             <span className="pc-stat-value">{lowStock}</span>
-            <span className="pc-stat-sub">5 units or less</span>
+            <span className="pc-stat-sub">At or below each product's threshold</span>
           </div>
           <div className="pc-stat">
             <span className="pc-stat-label">Out of Stock</span>
@@ -608,11 +608,12 @@ export function ProductCatalogScreen() {
             </div>
             {filtered.map((product) => {
               const stock = stockMap[product.id] ?? 0
+              const threshold = product.low_stock_threshold ?? 5
               const catName = product.category_id ? catMap[product.category_id] ?? '' : ''
               const initial = product.name.charAt(0).toUpperCase() || 'P'
-              const stockCls = stock > 5 ? 'in' : stock > 0 ? 'low' : 'out'
-              const stockLabel = stock > 5 ? `${stock} in stock` : stock > 0 ? `${stock} left` : 'Out of stock'
-              const pillLabel = stock > 5 ? 'In Stock' : stock > 0 ? 'Low Stock' : 'Out of Stock'
+              const stockCls = stock > threshold ? 'in' : stock > 0 ? 'low' : 'out'
+              const stockLabel = stock > threshold ? `${stock} in stock` : stock > 0 ? `${stock} left` : 'Out of stock'
+              const pillLabel = stock > threshold ? 'In Stock' : stock > 0 ? 'Low Stock' : 'Out of Stock'
 
               return (
                 <div key={product.id} className="pc-row" role="row">

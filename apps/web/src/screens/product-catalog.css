@@ -774,3 +774,18 @@
   .pc-drawer { width: 100vw; border-radius: 0; }
   .pc-stock-qty { display: none; } /* tiny screens: pill only */
 }
+
+/* ================================================================
+   Oversold stock state (Phase 2: Inventory Operations)
+   Additive only — a 4th state alongside the existing in/low/out pills
+   above. Negative stock is a distinct, worse-than-out-of-stock signal,
+   so it gets its own color (deep plum) rather than reusing the red
+   used for "out of stock" (current_stock === 0). Never hide or clamp
+   the negative number this pill sits next to.
+   ================================================================ */
+.pc-stock-pill.oversold {
+  background: #f1e3f5;
+  border-color: #c9a3dd;
+  color: #5b2d7a;
+}
+.pc-pill-dot.oversold { background: #7a3fa0; }
