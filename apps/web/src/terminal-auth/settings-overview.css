@@ -1,3 +1,7 @@
+.settings-overview .setup-card > div:last-child {
+  flex: 1;
+}
+
 .settings-overview .setup-card .cta {
   box-sizing: border-box;
   width: 100%;
