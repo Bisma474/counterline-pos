@@ -89,6 +89,7 @@ export function ProductCatalogScreen() {
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imageError, setImageError] = useState('')
   const firstRef = useRef<HTMLInputElement>(null)
+  const barcodeRef = useRef<HTMLInputElement>(null)
 
   const handleImagePick = (file: File | null) => {
     setImageError('')
@@ -732,16 +733,21 @@ export function ProductCatalogScreen() {
                     <label htmlFor="pf-barcode">
                       Barcode <span className="pc-opt">optional</span>
                     </label>
-                    <input
-                      id="pf-barcode"
-                      type="text"
-                      className={errs.barcode ? 'err' : ''}
-                      value={form.barcode}
-                      onChange={(e) => setField('barcode', e.target.value.trim())}
-                      maxLength={80}
-                      placeholder="Scan or type"
-                      autoComplete="off"
-                    />
+                    <div className="pc-barcode-input">
+                      <input
+                        ref={barcodeRef}
+                        id="pf-barcode"
+                        type="text"
+                        className={errs.barcode ? 'err' : ''}
+                        value={form.barcode}
+                        onChange={(e) => setField('barcode', e.target.value.trim())}
+                        maxLength={80}
+                        placeholder="Scan or type"
+                        autoComplete="off"
+                      />
+                      <button className="pc-scan-button" type="button" onClick={() => barcodeRef.current?.focus()} aria-label="Scan barcode with connected scanner">⌁ Scan</button>
+                    </div>
+                    <p className="pc-field-hint">Select Scan, then use a connected USB or Bluetooth barcode scanner. Scanners enter the code here automatically.</p>
                     {errs.barcode && <p className="pc-field-err">{errs.barcode}</p>}
                   </div>
                 </div>

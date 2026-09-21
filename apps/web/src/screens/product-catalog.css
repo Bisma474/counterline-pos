@@ -607,6 +607,10 @@
 .pc-field select.err { border-color: #b34330; }
 .pc-field input:disabled,
 .pc-field select:disabled { background: #f3ede0; color: #9e8f75; cursor: not-allowed; }
+.pc-barcode-input { display: flex; gap: 8px; }
+.pc-barcode-input input { min-width: 0; flex: 1; }
+.pc-scan-button { flex: 0 0 auto; border: 1px solid #d9d0c0; border-radius: 5px; background: #fff; color: #254f41; padding: 0 12px; font: 700 12px 'DM Sans', sans-serif; cursor: pointer; }
+.pc-scan-button:hover, .pc-scan-button:focus-visible { border-color: #254f41; background: #eef5ef; }
 .pc-field-err { font-size: 11px; color: #702b1e; margin: 0; }
 .pc-field-hint { font-size: 11px; color: #c4b89a; margin: 0; }
 

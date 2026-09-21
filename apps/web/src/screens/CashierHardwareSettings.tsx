@@ -11,6 +11,7 @@ import { liveQuery } from 'dexie'
 import { DAY } from '../terminal-auth/policy'
 import { browserCapabilities, type BrowserCapabilities, type ShellStatus, type StorageStatus, type TerminalIdentity } from '../terminal-auth/hardware/browserCapabilities'
 import { StorageSettings } from '../terminal-auth/hardware/StorageSettings'
+import { checkTerminalService } from '../terminal-auth/hardware/terminalService'
 import { posDb } from '../lib/db'
 import '../terminal-auth/hardware/hardware.css'
 
@@ -20,6 +21,7 @@ interface Snapshot {
   shell?: ShellStatus
   now: number
   online: boolean
+  serviceAvailable?: boolean
   errors: string[]
 }
 const dateLabel = (value: number) => Number.isFinite(value) && value > 0 ? new Date(value).toLocaleString() : 'Not available'
@@ -38,15 +40,16 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
     setChecking(true)
     const online = adapter.online()
     setSnapshot(previous => previous ? { ...previous, online, now: adapter.now() } : previous)
-    const results = await Promise.allSettled([adapter.readIdentity(), adapter.storage(), adapter.shell()])
+    const results = await Promise.allSettled([adapter.readIdentity(), adapter.storage(), adapter.shell(), checkTerminalService()])
     if (!mounted.current || current !== generation.current) return
-    const [identity, storage, shell] = results
+    const [identity, storage, shell, service] = results
     const errors: string[] = []
     if (identity.status === 'rejected') errors.push('Terminal identity could not be read. Keep browser data intact and ask your manager to check storage access.')
     if (storage.status === 'rejected') errors.push('Browser storage status is unavailable. Try checking again.')
     if (shell.status === 'rejected') errors.push('Offline app status could not be checked.')
+    if (service.status !== 'fulfilled' || !service.value) errors.push('Terminal service is unavailable. Reconnect and try again.')
     const terminal = identity.status === 'fulfilled' ? identity.value : undefined
-    setSnapshot({ terminal, storage: storage.status === 'fulfilled' ? storage.value : undefined, shell: shell.status === 'fulfilled' ? shell.value : { state: 'unavailable' }, now: adapter.now(), online: adapter.online(), errors })
+    setSnapshot({ terminal, storage: storage.status === 'fulfilled' ? storage.value : undefined, shell: shell.status === 'fulfilled' ? shell.value : { state: 'unavailable' }, now: adapter.now(), online: adapter.online(), serviceAvailable: service.status === 'fulfilled' && service.value, errors })
     if (terminal) { const config = await posDb.store_config.get(terminal.storeId); if (mounted.current && config) setStoreName(config.name) }
     setChecking(false)
   }, [adapter])
@@ -81,9 +84,10 @@ export function CashierHardwareSettings({ adapter = browserCapabilities }: { ada
       <div role="status" aria-live="polite" aria-atomic="true" className="hardware-status">
         <span className={`terminal-state ${terminal && !expired && !clockInvalid ? 'active' : 'muted'}`}>{state}</span>
         <span className={`terminal-state ${snapshot?.online ? 'active' : 'offline'}`}>{snapshot ? snapshot.online ? 'Browser online' : 'Browser offline' : 'Checking connection…'}</span>
+        <span className={`terminal-state ${snapshot?.serviceAvailable ? 'active' : 'muted'}`}>{snapshot ? snapshot.serviceAvailable ? 'Terminal service available' : 'Terminal service unavailable' : 'Checking terminal service…'}</span>
         <span>{snapshot?.shell ? shellLabels[snapshot.shell.state] : 'Checking offline app…'}</span>
       </div>
-      <p className="hardware-help">Connection status comes from this browser; it does not confirm server availability or synchronized sales. Status refreshes while this page is open.</p>
+      <p className="hardware-help">Device status checks this browser, local terminal identity, and the terminal service. It does not confirm that sales have synchronized.</p>
       {snapshot?.errors.map(error => <p key={error} role="alert" className="form-notice error">{error}</p>)}
       {terminal && <dl className="hardware-details identity-details">
         <div><dt>Terminal name</dt><dd>{terminal.name}</dd></div>
