@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { currentAccess } from './cache'
 import { usePosStore } from '../lib/pos-store'
+import { signedInOwnerTerminalAccess } from './ownerTerminalAccess'
 
 export function CashierTerminalRoute({ children }: { children: ReactNode }) {
   const [allowed, setAllowed] = useState<boolean>()
@@ -9,9 +10,11 @@ export function CashierTerminalRoute({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true
     setAllowed(undefined)
-    const check = () => { void currentAccess().then(state => {
+    const check = () => { void currentAccess().then(async state => {
       if (!active) return
-      const valid = Boolean(state?.cache && state.employee && state.policy.valid)
+      const ownerAccess = state?.cache ? await signedInOwnerTerminalAccess(state.cache.device.store_id) : 'allowed'
+      if (!active) return
+      const valid = Boolean(state?.cache && state.employee && state.policy.valid && ownerAccess !== 'mismatch')
       if (!valid) usePosStore.getState().clearCart()
       setAllowed(valid)
     }).catch(() => { if (active) { usePosStore.getState().clearCart(); setAllowed(false) } }) }
