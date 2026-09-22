@@ -1,4 +1,4 @@
-import type { LocalOrder, LocalOrderItem, LocalPayment, OutboxEntry } from './db'
+import type { LocalOrder, LocalOrderItem, LocalPayment, LocalRefund, LocalRefundItem, OutboxEntry } from './db'
 
 export interface LocalSalesReport {
   grossSalesCents: number
@@ -24,6 +24,13 @@ export interface ReportingData {
   items: LocalOrderItem[]
   payments: LocalPayment[]
   outbox: OutboxEntry[]
+  // Optional: precise, per-refund-event/per-line data (see LocalRefund/LocalRefundItem). Omitted
+  // or absent for a given order, this falls back to that order's own refunded_at/
+  // refunded_amount_cents summary fields, treated as one whole-order reversal — the only shape
+  // that existed before partial refunds, and still correct for local data recorded before this
+  // feature shipped (which never got refunds/refund_items rows).
+  refunds?: LocalRefund[]
+  refundItems?: LocalRefundItem[]
 }
 
 const emptyReport = (): LocalSalesReport => ({
@@ -51,9 +58,28 @@ export function todayInTimezone(timezone: string, now = new Date()): string {
 export function calculateLocalSalesReport(storeId: string, day: string, timezone: string, data: ReportingData): LocalSalesReport {
   const report = emptyReport()
   const dayOrders = data.orders.filter(order => order.store_id === storeId && calendarDay(order.client_generated_at, timezone) === day)
-  const refundsToday = data.orders.filter(order => order.store_id === storeId && order.refunded_at && calendarDay(order.refunded_at, timezone) === day)
-  if (!dayOrders.length && !refundsToday.length) return report
+
+  // Precise path: real refund events, bucketed by each event's own created_at (not the order's
+  // sale date), with each line's merchandise/tax share computed from its own order_item — the same
+  // split the server performs in reports.ts's loadDailySummary. Legacy path: an order carrying the
+  // old refunded_at/refunded_amount_cents summary with no local refund rows at all (recorded
+  // before this feature existed) still reports as one whole-order reversal, bucketed by that
+  // timestamp — exactly the only behavior that existed before partial refunds.
+  const storeRefunds = (data.refunds ?? []).filter(refund => refund.store_id === storeId)
+  const refundItemsByRefundId = new Map<string, LocalRefundItem[]>()
+  for (const item of data.refundItems ?? []) {
+    const bucket = refundItemsByRefundId.get(item.refund_id) ?? []
+    bucket.push(item)
+    refundItemsByRefundId.set(item.refund_id, bucket)
+  }
+  const ordersWithLocalRefunds = new Set(storeRefunds.map(refund => refund.order_id))
+  const refundsToday = storeRefunds.filter(refund => calendarDay(refund.created_at, timezone) === day)
+  const legacyRefundedOrdersToday = data.orders.filter(order => order.store_id === storeId && order.refunded_at
+    && !ordersWithLocalRefunds.has(order.id) && calendarDay(order.refunded_at, timezone) === day)
+
+  if (!dayOrders.length && !refundsToday.length && !legacyRefundedOrdersToday.length) return report
   const orderIds = new Set(dayOrders.map(order => order.id))
+  const orderItemById = new Map(data.items.map(item => [item.id, item]))
   const outboxByOrder = new Map(data.outbox.filter(entry => entry.store_id === storeId && orderIds.has(entry.order_id)).map(entry => [entry.order_id, entry]))
 
   for (const order of dayOrders) {
@@ -83,7 +109,25 @@ export function calculateLocalSalesReport(storeId: string, day: string, timezone
     if (payment.method === 'card') report.cardTakingsCents += payment.amount_cents
   }
   const paymentByOrder = new Map(data.payments.map(payment => [payment.order_id, payment]))
-  for (const order of refundsToday) {
+  for (const refund of refundsToday) {
+    report.refundedCount += 1
+    report.refundedAmountCents += refund.amount_cents
+    let merchandiseDelta = 0, taxDelta = 0
+    for (const refundItem of refundItemsByRefundId.get(refund.id) ?? []) {
+      const orderItem = orderItemById.get(refundItem.order_item_id)
+      if (!orderItem) continue
+      const lineNet = orderItem.subtotal_cents - (orderItem.discount_applied_cents ?? 0)
+      merchandiseDelta += Math.round((lineNet * refundItem.quantity) / orderItem.quantity)
+      taxDelta += Math.round((orderItem.tax_cents * refundItem.quantity) / orderItem.quantity)
+    }
+    report.netSalesCents -= merchandiseDelta
+    report.taxCents -= taxDelta
+    report.recordedTotalCents -= refund.amount_cents
+    const payment = paymentByOrder.get(refund.order_id)
+    if (payment?.method === 'cash') report.cashTakingsCents -= refund.amount_cents
+    if (payment?.method === 'card') report.cardTakingsCents -= refund.amount_cents
+  }
+  for (const order of legacyRefundedOrdersToday) {
     const amount = order.refunded_amount_cents ?? order.total_cents
     report.refundedCount += 1
     report.refundedAmountCents += amount
@@ -201,10 +245,18 @@ export function calculateCashierShift(
   storeId: string,
   day: string,
   timezone: string,
+  refunds: LocalRefund[] = [],
 ): CashierShiftSummary {
   const todayOrders = orders.filter(o => o.store_id === storeId && calendarDay(o.client_generated_at, timezone) === day)
   const orderIds = new Set(todayOrders.map(o => o.id))
-  const refundsToday = orders.filter(o => o.store_id === storeId && o.refunded_at && calendarDay(o.refunded_at, timezone) === day)
+  // Same precise-vs-legacy split as calculateLocalSalesReport: a real refund event's own
+  // created_at decides its day, with the whole-order refunded_at fallback only for orders that
+  // predate this feature and never got a local refund row at all.
+  const storeRefunds = refunds.filter(refund => refund.store_id === storeId)
+  const ordersWithLocalRefunds = new Set(storeRefunds.map(refund => refund.order_id))
+  const refundsToday = storeRefunds.filter(refund => calendarDay(refund.created_at, timezone) === day)
+  const legacyRefundedOrdersToday = orders.filter(o => o.store_id === storeId && o.refunded_at
+    && !ordersWithLocalRefunds.has(o.id) && calendarDay(o.refunded_at, timezone) === day)
   let cashCents = 0
   let cardCents = 0
   let changeCents = 0
@@ -218,14 +270,21 @@ export function calculateCashierShift(
     }
   }
   const paymentByOrder = new Map(payments.map(payment => [payment.order_id, payment]))
-  for (const order of refundsToday) {
+  let refundedAmountToday = 0
+  for (const refund of refundsToday) {
+    refundedAmountToday += refund.amount_cents
+    const payment = paymentByOrder.get(refund.order_id)
+    if (payment?.method === 'cash') cashCents -= refund.amount_cents
+    if (payment?.method === 'card') cardCents -= refund.amount_cents
+  }
+  for (const order of legacyRefundedOrdersToday) {
     const amount = order.refunded_amount_cents ?? order.total_cents
+    refundedAmountToday += amount
     const payment = paymentByOrder.get(order.id)
     if (payment?.method === 'cash') cashCents -= amount
     if (payment?.method === 'card') cardCents -= amount
   }
-  const salesCents = todayOrders.reduce((sum, o) => sum + o.total_cents, 0)
-    - refundsToday.reduce((sum, o) => sum + (o.refunded_amount_cents ?? o.total_cents), 0)
+  const salesCents = todayOrders.reduce((sum, o) => sum + o.total_cents, 0) - refundedAmountToday
   return {
     salesCents,
     orderCount: todayOrders.length,
