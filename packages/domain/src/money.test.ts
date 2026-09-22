@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calculateDiscountedLine, calculateLine, discountNeedsManagerApproval, formatCents, parseCents, sumDiscountedLines, sumLines } from './money.ts'
+import { calculateDiscountedLine, calculateLine, discountNeedsManagerApproval, formatCents, parseCents, splitOrderItemRefundAmount, sumDiscountedLines, sumLines } from './money.ts'
 
 test('rounds tax half up in integer cents', () => {
   assert.equal(calculateLine(10, 1, 500).taxCents, 1)
@@ -42,4 +42,31 @@ test('20% discount is within cashier authority; anything above needs manager app
   assert.equal(discountNeedsManagerApproval(1_000, 201), true)
   assert.equal(discountNeedsManagerApproval(1_000, 250), true)
   assert.equal(discountNeedsManagerApproval(1_000, 0), false)
+})
+test('partial refund split: repeated refunds of the same line never leak or gain a cent', () => {
+  // 376 cents across 3 units doesn't divide evenly (125.33...) — refund 1 unit at a time and
+  // confirm the three amounts sum to exactly 376, with the last partial absorbing the remainder.
+  let refundedQty = 0, refundedAmount = 0
+  const amounts: number[] = []
+  for (let i = 0; i < 3; i++) {
+    const amount = splitOrderItemRefundAmount(3, 376, refundedQty, refundedAmount, 1)
+    amounts.push(amount)
+    refundedQty += 1
+    refundedAmount += amount
+  }
+  assert.deepEqual(amounts, [125, 125, 126])
+  assert.equal(refundedAmount, 376)
+})
+test('partial refund split: refunding everything in one go equals the full line total', () => {
+  assert.equal(splitOrderItemRefundAmount(2, 3888, 0, 0, 2), 3888)
+})
+test('partial refund split: a second partial that exhausts the remainder gets the exact leftover, not a re-rounded estimate', () => {
+  const first = splitOrderItemRefundAmount(3, 376, 0, 0, 1) // 125
+  const second = splitOrderItemRefundAmount(3, 376, 1, first, 2) // exhausts remaining 2 units
+  assert.equal(first, 125)
+  assert.equal(second, 376 - 125)
+})
+test('partial refund split rejects a quantity beyond what remains', () => {
+  assert.throws(() => splitOrderItemRefundAmount(2, 1000, 1, 500, 2))
+  assert.throws(() => splitOrderItemRefundAmount(2, 1000, 2, 1000, 1))
 })

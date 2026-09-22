@@ -39,6 +39,7 @@ const MIGRATIONS = [
   '202609200001_service_role_only_rls_policies.sql',
   '202609220001_inventory_operations.sql',
   '202609220002_product_variants.sql',
+  '202609230001_partial_refunds.sql',
 ]
 
 type AdjustResult = { product_id: string; old_quantity: number; new_quantity: number; delta: number; movement_id: string }

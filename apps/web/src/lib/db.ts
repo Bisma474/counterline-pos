@@ -158,6 +158,32 @@ export interface SyncMetadata {
   value: string
 }
 
+/** Mirrors the server's pos_refunds — one row per refund event, which may cover any subset of an
+ * order's line items/quantities (never the whole order implicitly; see LocalRefundItem for what
+ * was actually returned). An order can have any number of these now, not just zero or one. */
+export interface LocalRefund {
+  id: string
+  store_id: string
+  order_id: string
+  amount_cents: number       // integer cents; sum of this refund's line items, not the order total
+  reason: string | null
+  refunded_by: string
+  exchange_order_id?: string | null
+  created_at: string         // ISO 8601
+}
+
+/** Mirrors the server's pos_refund_items — one row per line item covered by a given LocalRefund,
+ * with its own quantity/amount so "how much of order_item X has been refunded so far" can be
+ * computed locally the same way the server enforces it (sum across every refund referencing it). */
+export interface LocalRefundItem {
+  id: string
+  refund_id: string
+  order_item_id: string
+  product_id: string
+  quantity: number
+  amount_cents: number       // integer cents; this line's proportional share, not the whole refund
+}
+
 export interface LocalStockAdjustment {
   operation_id: string
   product_id: string
@@ -182,6 +208,8 @@ export class CounterlineDatabase extends Dexie {
   outbox!: EntityTable<OutboxEntry, 'id'>
   sync_metadata!: EntityTable<SyncMetadata, 'key'>
   stock_adjustments!: Table<LocalStockAdjustment, [string, string]>
+  refunds!: EntityTable<LocalRefund, 'id'>
+  refund_items!: EntityTable<LocalRefundItem, 'id'>
 
   constructor() {
     super('counterline-pos')
@@ -242,10 +270,22 @@ export class CounterlineDatabase extends Dexie {
           discount_applied_cents: item.discount_applied_cents ?? 0, taxable_cents: item.taxable_cents ?? item.subtotal_cents })
       }
     })
+
+    // Partial (line-item, repeatable) refunds: brand-new tables, nothing to backfill. Every order
+    // written before this version keeps its LocalOrder.refunded_at/refunded_amount_cents fields as
+    // a best-effort "was this ever refunded, for roughly how much" summary — real per-refund,
+    // per-line detail only exists from here on, in these two tables.
     this.version(6).stores({
-      products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id, [store_id+parent_product_id]',
+      refunds: 'id, order_id, store_id, created_at',
+      refund_items: 'id, refund_id, order_item_id',
     })
 
+    // Product variants: parent products with independently sellable options. Existing products
+    // are unaffected (parent_product_id stays undefined for them); this only adds the compound
+    // index a variant picker needs to look up siblings by parent.
+    this.version(7).stores({
+      products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id, [store_id+parent_product_id]',
+    })
   }
 }
 

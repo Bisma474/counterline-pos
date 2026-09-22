@@ -75,7 +75,7 @@ function useFinancialReport(day?: string) {
         const reportDay = day || todayInTimezone(config.timezone)
 
         subscription = liveQuery(async () => {
-          const [orders, items, payments, outbox, products, stock, adjustments] = await Promise.all([
+          const [orders, items, payments, outbox, products, stock, adjustments, refunds, refundItems] = await Promise.all([
             posDb.orders.where('store_id').equals(access.storeId).toArray(),
             posDb.order_items.toArray(),
             posDb.payments.toArray(),
@@ -83,6 +83,8 @@ function useFinancialReport(day?: string) {
             posDb.products.where('store_id').equals(access.storeId).toArray(),
             posDb.server_stock.toArray(),
             posDb.stock_adjustments.toArray(),
+            posDb.refunds.where('store_id').equals(access.storeId).toArray(),
+            posDb.refund_items.toArray(),
           ])
 
           const report = calculateLocalSalesReport(access.storeId, reportDay, config.timezone, {
@@ -90,6 +92,8 @@ function useFinancialReport(day?: string) {
             items,
             payments,
             outbox,
+            refunds,
+            refundItems,
           })
           const topProducts = calculateTopProducts(items, orders, access.storeId, reportDay, config.timezone, 4)
           const lowStock = calculateLowStockItems(products, stock, adjustments, 5, 5)
@@ -630,15 +634,16 @@ export function CashierDashboardScreen() {
       const today = todayInTimezone(timezone)
 
       subscription = liveQuery(async () => {
-        const [allStoreOrders, items, payments, outbox] = await Promise.all([
+        const [allStoreOrders, items, payments, outbox, refunds] = await Promise.all([
           posDb.orders.where('store_id').equals(cache.device.store_id).toArray(),
           posDb.order_items.toArray(),
           posDb.payments.toArray(),
           posDb.outbox.where('store_id').equals(cache.device.store_id).toArray(),
+          posDb.refunds.where('store_id').equals(cache.device.store_id).toArray(),
         ])
 
         const terminalOrders = allStoreOrders.filter(o => o.receipt_number.startsWith(cache.device.receipt_prefix))
-        const shift = calculateCashierShift(terminalOrders, payments, cache.device.store_id, today, timezone)
+        const shift = calculateCashierShift(terminalOrders, payments, cache.device.store_id, today, timezone, refunds)
         const recentOrders = getRecentOrders(terminalOrders, items, payments, cache.device.store_id, 5)
 
         return {
