@@ -41,7 +41,7 @@ for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_ch
   '202609170002_cart_discounts.sql', '202609180001_terminal_name_uniqueness.sql',
   '202609180002_pos_orders_report_read_access.sql',
   '202609180002_store_business_details.sql', '202609180003_tax_rate_change_feed.sql',
-  '202609180004_product_images.sql', '202609180005_refunds.sql', '202609220001_inventory_operations.sql']) {
+  '202609180004_product_images.sql', '202609180005_refunds.sql', '202609190001_audit_log.sql', '202609220001_inventory_operations.sql', '202609230001_partial_refunds.sql']) {
   await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
 }
 
@@ -176,18 +176,24 @@ try {
   await expect(page.getByText('Refunded', { exact: false })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Refund this receipt' })).toHaveCount(0)
 
-  // 6. The server-side guard must independently reject a second refund of the same order as a
-  //    conflict, not silently accept it twice — simulated as a direct API call (e.g. a second
-  //    device that doesn't yet know locally that this order was refunded).
+  // 6. The server-side guard must independently reject a second refund of an order that's
+  //    already fully refunded, not silently accept it twice — simulated as a direct API call
+  //    (e.g. a second device that doesn't yet know locally that this order was refunded). Partial
+  //    refunds are now allowed (any number of them, as long as no line item is ever refunded past
+  //    its sold quantity — see apps/api/test/refund-partial.test.ts), so this is no longer a
+  //    blanket "this order already has a refund" 409; omitting `items` means "refund everything
+  //    still refundable," and since this order's only line is already fully refunded, that's now
+  //    a 422 nothing_to_refund rather than a 409 refund_conflict.
   const secondAttempt = await fetch(`http://127.0.0.1:3192/api/orders/${orderId}/refund`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}`, Origin: 'http://127.0.0.1:3192' },
     body: JSON.stringify({ store_id: store }),
   })
-  assert.equal(secondAttempt.status, 409, 'A second refund of the same order should be rejected as a conflict')
+  assert.equal(secondAttempt.status, 422, 'A second refund of an already-fully-refunded order should be rejected')
+  assert.equal((await secondAttempt.json() as { code: string }).code, 'nothing_to_refund')
   const refundCount = await database.query('select 1 from public.pos_refunds where store_id=$1 and order_id=$2', [store, orderId])
   assert.equal(refundCount.rowCount, 1, 'Exactly one refund row must exist no matter how many times refund is attempted')
 
-  console.log('PASS: owner refunded a real completed sale through the Receipt screen; stock, pos_refunds/pos_refund_items and the change feed all committed correctly; a cashier was rejected server-side; a duplicate refund was rejected as a conflict, not double-applied.')
+  console.log('PASS: owner refunded a real completed sale through the Receipt screen; stock, pos_refunds/pos_refund_items and the change feed all committed correctly; a cashier was rejected server-side; a duplicate refund of an already-fully-refunded order was rejected, not double-applied.')
 } finally {
   await browser?.close(); webServer.closeAllConnections(); identityServer.closeAllConnections(); webServer.close(); identityServer.close(); await database.close(); await db.end()
 }
