@@ -55,6 +55,7 @@ const chain = [
   '202609180001_terminal_name_uniqueness.sql',
   '202609180002_pos_orders_report_read_access.sql',
   '202609180005_refunds.sql',
+  '202609230001_partial_refunds.sql',
 ]
 
 test('loadDailySummary aggregates orders, items and payments within the store timezone day', async () => {
@@ -82,18 +83,19 @@ test('loadDailySummary aggregates orders, items and payments within the store ti
     }
 
     const insertOrder = async (receipt: string, generatedAtUtc: string) => {
-      const id = randomUUID()
+      const id = randomUUID(), itemId = randomUUID()
       await database.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
         subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at)
         values ($1,$2,$3,'USD','One','Asia/Karachi',500,0,25,525,1,$4)`, [id, store, receipt, generatedAtUtc])
       await database.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
         snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,subtotal_cents,discount_applied_cents,taxable_cents,tax_cents,total_cents)
-        values ($1,$2,$3,$4,'Test item','SKU-1',500,500,1,2,500,0,500,25,525)`, [randomUUID(), store, id, product])
+        values ($1,$2,$3,$4,'Test item','SKU-1',500,500,1,2,500,0,500,25,525)`, [itemId, store, id, product])
       await database.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,client_generated_at)
         values ($1,$2,$3,'cash',525,525,0,$4)`, [randomUUID(), store, id, generatedAtUtc])
-      return id
+      return { orderId: id, itemId }
     }
-    const firstOrderId = await insertOrder('DS-000001', '2026-09-18T10:00:00.000Z') // 15:00 local on the 18th
+    const first = await insertOrder('DS-000001', '2026-09-18T10:00:00.000Z') // 15:00 local on the 18th
+    const firstOrderId = first.orderId
     await insertOrder('DS-000002', '2026-09-18T20:00:00.000Z') // 01:00 local on the 19th — excluded
 
     const summary = await loadDailySummary(store, '2026-09-18')
@@ -107,8 +109,11 @@ test('loadDailySummary aggregates orders, items and payments within the store ti
     assert.equal(summary.averageSaleCents, 525)
     assert.equal(summary.refundedCount, 0)
 
-    await database.query(`insert into public.pos_refunds(store_id,order_id,amount_cents,refunded_by,created_at)
-      values ($1,$2,525,$3,'2026-09-18T11:00:00.000Z')`, [store, firstOrderId, owner])
+    const refundId = randomUUID()
+    await database.query(`insert into public.pos_refunds(id,store_id,order_id,amount_cents,refunded_by,created_at)
+      values ($1,$2,$3,525,$4,'2026-09-18T11:00:00.000Z')`, [refundId, store, firstOrderId, owner])
+    await database.query(`insert into public.pos_refund_items(store_id,refund_id,order_item_id,product_id,quantity,amount_cents)
+      values ($1,$2,$3,$4,2,525)`, [store, refundId, first.itemId, product])
     const afterRefund = await loadDailySummary(store, '2026-09-18')
     assert.equal(afterRefund.completedOrderCount, 1)
     assert.equal(afterRefund.grossSalesCents, 500)
@@ -132,6 +137,71 @@ test('loadDailySummary aggregates orders, items and payments within the store ti
     assert.equal(refundDay.grossSalesCents, 500)
     assert.equal(refundDay.recordedTotalCents, 0, 'today’s refund offsets today’s sale')
     assert.equal(refundDay.refundedCount, 1)
+  } finally { await database.close() }
+})
+
+test('loadDailySummary sums a genuine line-item-quantity partial refund from its own stored share, not the whole order', async () => {
+  const database = new PGlite()
+  try {
+    await database.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+      create schema auth; create table auth.users(id uuid primary key,raw_user_meta_data jsonb);
+      create function auth.uid() returns uuid language sql as 'select null::uuid';
+      create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
+    for (const name of chain) {
+      const sql = (await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', '')
+      await database.exec(sql)
+    }
+    const owner = randomUUID(), store = randomUUID(), product = randomUUID()
+    await database.query('insert into auth.users(id) values ($1)', [owner])
+    await database.query("insert into public.stores(id,name,code,created_by,timezone) values ($1,'One','partial-refund',$2,'UTC')", [store, owner])
+    await database.query(`insert into public.pos_products(id,store_id,sku,name,unit_price_cents) values ($1,$2,'SKU-1','Test item',500)`, [product, store])
+
+    const fixture = db as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }> }
+    fixture.query = async (sql: string, params?: unknown[]) => {
+      const result = await database.query(sql, params)
+      return { rows: result.rows, rowCount: Math.max(result.affectedRows ?? 0, result.rows.length) }
+    }
+
+    // A 3-unit line at 500/unit + 5% tax: subtotal 1500, tax 75, total 1575.
+    const orderId = randomUUID(), itemId = randomUUID()
+    await database.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
+      subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at)
+      values ($1,$2,'PR-000001','USD','One','UTC',1500,0,75,1575,1,'2026-09-18T10:00:00.000Z')`, [orderId, store])
+    await database.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
+      snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,subtotal_cents,discount_applied_cents,taxable_cents,tax_cents,total_cents)
+      values ($1,$2,$3,$4,'Test item','SKU-1',500,500,1,3,1500,0,1500,75,1575)`, [itemId, store, orderId, product])
+    await database.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,client_generated_at)
+      values ($1,$2,$3,'card',1575,1575,0,'2026-09-18T10:00:00.000Z')`, [randomUUID(), store, orderId])
+
+    // Refund 1 of 3 units: 1/3 of subtotal (500) and 1/3 of tax (25) — 525 total for this line.
+    const refund1 = randomUUID()
+    await database.query(`insert into public.pos_refunds(id,store_id,order_id,amount_cents,refunded_by,created_at)
+      values ($1,$2,$3,525,$4,'2026-09-18T11:00:00.000Z')`, [refund1, store, orderId, owner])
+    await database.query(`insert into public.pos_refund_items(store_id,refund_id,order_item_id,product_id,quantity,amount_cents)
+      values ($1,$2,$3,$4,1,525)`, [store, refund1, itemId, product])
+
+    const afterFirstPartial = await loadDailySummary(store, '2026-09-18')
+    assert.equal(afterFirstPartial.refundedCount, 1)
+    assert.equal(afterFirstPartial.refundedAmountCents, 525)
+    assert.equal(afterFirstPartial.netSalesCents, 1500 - 500, 'merchandise reduced by only the refunded unit’s share, not the whole 1500 line')
+    assert.equal(afterFirstPartial.taxCents, 75 - 25, 'tax reduced by only the refunded unit’s share')
+    assert.equal(afterFirstPartial.cardTakingsCents, 1575 - 525)
+    assert.equal(afterFirstPartial.recordedTotalCents, 1575 - 525)
+
+    // Second, later partial refund of the remaining 2 units — must ADD to the first, not replace
+    // it (this is exactly what pos_refunds' relaxed unique(store_id,order_id) constraint enables).
+    const refund2 = randomUUID()
+    await database.query(`insert into public.pos_refunds(id,store_id,order_id,amount_cents,refunded_by,created_at)
+      values ($1,$2,$3,1050,$4,'2026-09-18T12:00:00.000Z')`, [refund2, store, orderId, owner])
+    await database.query(`insert into public.pos_refund_items(store_id,refund_id,order_item_id,product_id,quantity,amount_cents)
+      values ($1,$2,$3,$4,2,1050)`, [store, refund2, itemId, product])
+
+    const afterBothPartials = await loadDailySummary(store, '2026-09-18')
+    assert.equal(afterBothPartials.refundedCount, 2, 'two separate refund events')
+    assert.equal(afterBothPartials.refundedAmountCents, 525 + 1050, 'sums both partial refunds')
+    assert.equal(afterBothPartials.netSalesCents, 0, 'now fully refunded across two events, net sales is zero')
+    assert.equal(afterBothPartials.taxCents, 0)
+    assert.equal(afterBothPartials.recordedTotalCents, 0)
   } finally { await database.close() }
 })
 
