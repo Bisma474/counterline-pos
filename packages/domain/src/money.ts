@@ -70,6 +70,30 @@ export function sumDiscountedLines(lines: ReturnType<typeof calculateDiscountedL
   }), { subtotalCents: 0, discountCents: 0, taxCents: 0, totalCents: 0 })
 }
 
+// Splits an order line's total_cents into a refund amount for a partial quantity, guaranteeing
+// that repeated partial refunds of the same line — however many, in whatever order — never sum
+// to more or less than the line's original total once fully refunded (no cent leakage or gain
+// from independent rounding). Each partial refund before the last one gets a floor-rounded
+// proportional share; the refund that exhausts the line's remaining quantity gets exactly
+// whatever's left (totalCents minus everything already refunded for it), never a second
+// independently-rounded estimate.
+export function splitOrderItemRefundAmount(
+  originalQuantity: number,
+  totalCents: number,
+  alreadyRefundedQuantity: number,
+  alreadyRefundedAmountCents: number,
+  refundQuantity: number,
+): number {
+  boundedInteger(originalQuantity, 'Original quantity', 1, 10_000)
+  boundedInteger(totalCents, 'Line total', 0, MAX_CENTS)
+  boundedInteger(alreadyRefundedQuantity, 'Already-refunded quantity', 0, originalQuantity)
+  boundedInteger(alreadyRefundedAmountCents, 'Already-refunded amount', 0, totalCents)
+  const remainingQuantity = originalQuantity - alreadyRefundedQuantity
+  boundedInteger(refundQuantity, 'Refund quantity', 1, remainingQuantity)
+  if (refundQuantity === remainingQuantity) return totalCents - alreadyRefundedAmountCents
+  return Math.floor((totalCents * refundQuantity) / originalQuantity)
+}
+
 export function parseCents(input: string): number {
   const normalized = input.trim()
   if (!/^(?:0|[1-9]\d{0,7})(?:\.\d{1,2})?$/.test(normalized)) throw new Error('Enter a valid amount with up to two decimal places.')

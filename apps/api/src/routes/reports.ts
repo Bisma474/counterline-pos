@@ -79,13 +79,22 @@ export async function loadDailySummary(storeId: string, date: string): Promise<D
       join public.pos_orders o on o.store_id=p.store_id and o.id=p.order_id
       where o.store_id=$1 and o.client_generated_at >= $2 and o.client_generated_at < $3
       group by p.method`, [storeId, startUtc, endUtc]),
+    // Aggregated from pos_refund_items (each row scoped to a specific order line and however much
+    // of it was refunded) rather than from pos_orders directly — a refund's amount_cents is
+    // already correct on its own (it's a straight sum either way), but merchandise/tax MUST come
+    // from each refunded line's own stored share, not the whole order's totals, now that a refund
+    // can cover only some of an order's items. count(distinct r.id) keeps "number of refund
+    // events" as the count, despite the fan-out from joining refund_items.
     db.query<{ count: string; amount: string; merchandise: string; tax: string; cash: string; card: string }>(`
-      select count(*)::text as count, coalesce(sum(r.amount_cents),0)::text as amount,
-        coalesce(sum(o.subtotal_cents-o.discount_cents),0)::text as merchandise,
-        coalesce(sum(o.tax_cents),0)::text as tax,
-        coalesce(sum(case when p.method='cash' then r.amount_cents else 0 end),0)::text as cash,
-        coalesce(sum(case when p.method='card' then r.amount_cents else 0 end),0)::text as card
-      from public.pos_refunds r join public.pos_orders o on o.store_id=r.store_id and o.id=r.order_id
+      select count(distinct r.id)::text as count, coalesce(sum(ri.amount_cents),0)::text as amount,
+        coalesce(sum(round(((oi.subtotal_cents - oi.discount_applied_cents)::numeric * ri.quantity) / oi.quantity)),0)::text as merchandise,
+        coalesce(sum(round((oi.tax_cents::numeric * ri.quantity) / oi.quantity)),0)::text as tax,
+        coalesce(sum(case when p.method='cash' then ri.amount_cents else 0 end),0)::text as cash,
+        coalesce(sum(case when p.method='card' then ri.amount_cents else 0 end),0)::text as card
+      from public.pos_refunds r
+      join public.pos_refund_items ri on ri.store_id=r.store_id and ri.refund_id=r.id
+      join public.pos_order_items oi on oi.store_id=ri.store_id and oi.id=ri.order_item_id
+      join public.pos_orders o on o.store_id=r.store_id and o.id=r.order_id
       left join public.pos_payments p on p.store_id=o.store_id and p.order_id=o.id
       where r.store_id=$1 and r.created_at >= $2 and r.created_at < $3`,
       [storeId, startUtc, endUtc]),

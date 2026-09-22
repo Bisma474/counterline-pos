@@ -64,3 +64,117 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
     })
   return { operationId, receiptNumber, totalCents: totals.totalCents }
 }
+
+export interface ExchangeReturnItem { orderItemId: string; quantity: number }
+
+/**
+ * Returns specific item(s) from a past order and rings up replacement item(s), atomically, via
+ * POST /orders/:id/exchange. Online-only by design — same precedent as InventoryScreen.tsx's
+ * manual adjustments and cycle counts, another owner/manager-only backoffice action never queued
+ * through the offline outbox. The server is the source of truth for both halves' final figures;
+ * this function's local math (below) only builds the request and is re-derived, not trusted, by
+ * the server. On success, the authoritative response is written straight into the local
+ * orders/order_items/payments/refunds/refund_items tables — no outbox entry, since there's nothing
+ * left to sync once the request has already succeeded.
+ */
+export async function completeLocalExchange(
+  originalOrderId: string,
+  returnItems: ExchangeReturnItem[],
+  replacementItems: CartItem[],
+  storeId: string,
+  method: 'cash' | 'card',
+  tenderedCents: number,
+  reference: string | null,
+) {
+  if (!returnItems.length) throw new Error('Select at least one item to return.')
+  if (!replacementItems.length) throw new Error('Add at least one replacement product.')
+  if (replacementItems.some(item => item.storeId !== storeId)) throw new Error('Replacement cart contains a product from another store.')
+  const config = await posDb.store_config.get(storeId)
+  if (!config) throw new Error('Store catalog has not been downloaded to this browser.')
+  const lines = replacementItems.map(item => calculateDiscountedLine(item.unitPriceCents, item.quantity, item.taxRateBps, null))
+  const totals = sumDiscountedLines(lines)
+  boundedInteger(tenderedCents, 'Tender', 0, MAX_CENTS)
+  if (tenderedCents < totals.totalCents) throw new Error('Amount received must cover the replacement total.')
+  if (method === 'card' && tenderedCents !== totals.totalCents) throw new Error('Card amount must equal the replacement total.')
+
+  const exchangeOperationId = crypto.randomUUID()
+  const newOrderOperationId = crypto.randomUUID()
+  const now = new Date().toISOString()
+  const prefixRow = await posDb.sync_metadata.get(`receipt_prefix:${storeId}`)
+  const prefix = prefixRow?.value ?? `LOCAL-${crypto.randomUUID().toUpperCase()}-`
+  const sequenceKey = `receipt_seq:${storeId}`
+  const sequence = Number((await posDb.sync_metadata.get(sequenceKey))?.value ?? '0') + 1
+  if (!Number.isSafeInteger(sequence)) throw new Error('Receipt sequence is exhausted.')
+  const receiptNumber = `${prefix}${String(sequence).padStart(6, '0')}`
+
+  const newOrderItems = replacementItems.map((item, index) => ({
+    id: crypto.randomUUID(), product_id: item.productId, snapshot_name: item.name, snapshot_sku: item.sku,
+    snapshot_price_cents: item.unitPriceCents, snapshot_tax_bps: item.taxRateBps, catalog_version: item.catalogVersion, quantity: item.quantity,
+    discount_kind: null as 'percent' | 'fixed' | null, discount_value: null as number | null,
+    subtotal_cents: lines[index].subtotalCents, discount_applied_cents: lines[index].discountAppliedCents,
+    taxable_cents: lines[index].taxableCents, tax_cents: lines[index].taxCents, total_cents: lines[index].totalCents,
+  }))
+  const newOrderPayload = {
+    operation_id: newOrderOperationId,
+    order: { id: newOrderOperationId, store_id: storeId, receipt_number: receiptNumber, catalog_version: config.catalog_version,
+      client_generated_at: now, subtotal_cents: totals.subtotalCents, discount_cents: totals.discountCents, tax_cents: totals.taxCents, total_cents: totals.totalCents,
+      customer_id: null, employee_id: null, manager_id: null, manager_approved_at: null },
+    items: newOrderItems,
+    payment: { id: crypto.randomUUID(), method, amount_cents: totals.totalCents, tendered_cents: tenderedCents,
+      change_cents: method === 'cash' ? tenderedCents - totals.totalCents : 0, reference },
+  }
+
+  // Lazy import: keeps this module free of a top-level dependency on lib/supabase.ts (which reads
+  // import.meta.env at module load time — fine under Vite, but crashes any Node-run test that
+  // merely imports this file without a Vite runtime, even one that never calls this function).
+  const { accessToken, configuredApiUrl } = await import('./catalog')
+  const token = await accessToken()
+  const response = await fetch(`${configuredApiUrl()}/orders/${originalOrderId}/exchange`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      store_id: storeId, operation_id: exchangeOperationId,
+      return_items: returnItems.map(item => ({ order_item_id: item.orderItemId, quantity: item.quantity })),
+      new_order: newOrderPayload,
+    }),
+  })
+  const data = await response.json() as {
+    code?: string; message?: string
+    refund?: { id: string; amount_cents: string; reason: string | null; refunded_by: string; created_at: string }
+    refund_items?: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }>
+    new_order?: { accepted_checkpoint: string }
+    net_amount_cents?: number
+  }
+  if (!response.ok || !data.refund || !data.refund_items || !data.new_order || data.net_amount_cents === undefined) {
+    throw new Error(data.message ?? `Server error (${response.status})`)
+  }
+  const refund = data.refund, refundItems = data.refund_items, newOrder = data.new_order
+
+  await posDb.transaction('rw', [posDb.orders, posDb.order_items, posDb.payments, posDb.refunds, posDb.refund_items], async () => {
+    const originalOrder = await posDb.orders.get(originalOrderId)
+    const newLocalOrder: LocalOrder = { id: newOrderOperationId, store_id: storeId, receipt_number: receiptNumber,
+      subtotal_cents: totals.subtotalCents, discount_cents: totals.discountCents, tax_cents: totals.taxCents, total_cents: totals.totalCents,
+      catalog_version: config.catalog_version, client_generated_at: now, sync_status: 'synced',
+      currency: config.currency, store_name_snapshot: config.name, timezone_snapshot: config.timezone,
+      accepted_checkpoint: newOrder.accepted_checkpoint, failure_reason: null,
+      customer_id: null, employee_id: null, manager_id: null, manager_approved_at: null }
+    const newLocalItems: LocalOrderItem[] = newOrderItems.map(item => ({ ...item, order_id: newOrderOperationId }))
+    const newLocalPayment: LocalPayment = { ...newOrderPayload.payment, order_id: newOrderOperationId }
+    await posDb.orders.add(newLocalOrder)
+    await posDb.order_items.bulkAdd(newLocalItems)
+    await posDb.payments.add(newLocalPayment)
+    await posDb.refunds.put({ id: refund.id, store_id: storeId, order_id: originalOrderId, amount_cents: Number(refund.amount_cents),
+      reason: refund.reason, refunded_by: refund.refunded_by, exchange_order_id: newOrderOperationId, created_at: refund.created_at })
+    await posDb.refund_items.bulkPut(refundItems.map(item => ({ id: `${refund.id}:${item.order_item_id}`, refund_id: refund.id,
+      order_item_id: item.order_item_id, product_id: item.product_id, quantity: item.quantity, amount_cents: item.amount_cents })))
+    if (originalOrder) {
+      await posDb.orders.update(originalOrderId, {
+        refunded_at: new Date().toISOString(),
+        refunded_amount_cents: (originalOrder.refunded_amount_cents ?? 0) + Number(refund.amount_cents),
+      })
+    }
+  })
+
+  return { newOrderId: newOrderOperationId, receiptNumber, netAmountCents: data.net_amount_cents, refundAmountCents: Number(refund.amount_cents) }
+}
