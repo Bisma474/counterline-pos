@@ -20,6 +20,8 @@ const SERVICE_ROLE_ONLY_TABLES = [
   'terminal_device_sessions',
   'terminal_devices',
   'terminal_employees',
+  'pos_cycle_counts',
+  'pos_cycle_count_items',
 ]
 
 function walk(dir: string): string[] {

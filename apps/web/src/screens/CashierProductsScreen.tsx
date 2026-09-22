@@ -65,8 +65,8 @@ export function CashierProductsScreen() {
   }, [products, catFilter, q])
 
   const total = products?.length ?? 0
-  const inStock = products?.filter(product => (stock[product.id] ?? 0) > 5).length ?? 0
-  const lowStock = products?.filter(product => { const level = stock[product.id] ?? 0; return level > 0 && level <= 5 }).length ?? 0
+  const inStock = products?.filter(product => (stock[product.id] ?? 0) > (product.low_stock_threshold ?? 5)).length ?? 0
+  const lowStock = products?.filter(product => { const level = stock[product.id] ?? 0; return level > 0 && level <= (product.low_stock_threshold ?? 5) }).length ?? 0
   const outStock = products?.filter(product => (stock[product.id] ?? 0) <= 0).length ?? 0
   const hasFilters = q !== '' || catFilter !== 'all'
   const isLoading = products === null && !loadErr
@@ -81,7 +81,7 @@ export function CashierProductsScreen() {
     {products !== null && <div className="pc-stats-strip">
       <div className="pc-stat"><span className="pc-stat-label">Total Products</span><span className="pc-stat-value">{total}</span><span className="pc-stat-sub">Across all categories</span></div>
       <div className="pc-stat"><span className="pc-stat-label">In Stock</span><span className="pc-stat-value">{inStock}</span><span className="pc-stat-sub">Ready to sell</span></div>
-      <div className="pc-stat"><span className="pc-stat-label">Low Stock</span><span className="pc-stat-value">{lowStock}</span><span className="pc-stat-sub">5 units or less</span></div>
+      <div className="pc-stat"><span className="pc-stat-label">Low Stock</span><span className="pc-stat-value">{lowStock}</span><span className="pc-stat-sub">At or below each product's threshold</span></div>
       <div className="pc-stat"><span className="pc-stat-label">Out of Stock</span><span className="pc-stat-value">{outStock}</span><span className="pc-stat-sub">Needs replenishment</span></div>
     </div>}
 
@@ -127,11 +127,12 @@ export function CashierProductsScreen() {
         <div className="pc-thead" role="row"><span>Product</span><span>Barcode</span><span>Category</span><span>Price</span><span>Stock</span></div>
         {filtered.map(product => {
           const level = stock[product.id] ?? 0
+          const threshold = product.low_stock_threshold ?? 5
           const catName = product.category_id ? catMap[product.category_id] ?? '' : ''
           const initial = product.name.charAt(0).toUpperCase() || 'P'
-          const stockCls = level > 5 ? 'in' : level > 0 ? 'low' : 'out'
-          const stockLabel = level > 5 ? `${level} in stock` : level > 0 ? `${level} left` : 'Out of stock'
-          const pillLabel = level > 5 ? 'In Stock' : level > 0 ? 'Low Stock' : 'Out of Stock'
+          const stockCls = level > threshold ? 'in' : level > 0 ? 'low' : 'out'
+          const stockLabel = level > threshold ? `${level} in stock` : level > 0 ? `${level} left` : 'Out of stock'
+          const pillLabel = level > threshold ? 'In Stock' : level > 0 ? 'Low Stock' : 'Out of Stock'
           return <div key={product.id} className="pc-row" role="row">
             <div className="pc-cell-product" role="cell">{product.image_url ? <img className="pc-avatar-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="pc-avatar" aria-hidden="true">{initial}</div>}
               <div style={{ minWidth: 0 }}><div className="pc-prod-name" title={product.name}>{product.name}</div><div className="pc-prod-sku">{product.sku}</div></div></div>
