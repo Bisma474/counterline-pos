@@ -30,7 +30,11 @@ Opening stock uses the existing movement-backed creation transaction. There is n
 
 ## Deployment
 
-Apply `supabase/migrations/202609220001_product_variants.sql` after the existing migrations, **before deploying the updated API**. Then deploy API and web together. The migration is additive; existing non-variant records remain unchanged. It has been executed and tested on embedded PostgreSQL (PGlite), including existing-product compatibility. This branch does not apply it to the shared live Supabase project.
+Apply `supabase/migrations/202609220002_product_variants.sql` after the existing migrations, **before deploying the updated API**. Then deploy API and web together. The migration is additive; existing non-variant records remain unchanged. It has been executed and tested on embedded PostgreSQL (PGlite), including existing-product compatibility. This branch does not apply it to the shared live Supabase project.
+
+The variant migration is now numbered `202609220002` to avoid colliding with the inventory migration on current `develop`. Its SQL is unchanged; if a test environment already applied the former `202609220001_product_variants.sql`, do not execute the same schema changes again. Reconcile its migration record first. Catalog snapshots preserve both variant metadata and `low_stock_threshold`. Browser and integration fixtures include both feature migrations.
+
+Shared database verification on 2026-09-22 failed with `ENOTFOUND` before any schema query or write. A reachable database connection is still required to apply and verify this migration before deployment.
 
 The clean test database skips the pre-existing `202609180006_stores_country_column.sql` deployment-repair migration because the checked-in earlier business-details migration already creates that column. Neither historical migration is modified here.
 
@@ -87,7 +91,7 @@ Final validation results:
 
 - Web unit tests: 23 passed.
 - API order/report tests: 14 passed.
-- API integration tests: 17 passed.
+- API integration tests: 19 passed (18 in the suite run; the oversell fixture was corrected and its test passed on rerun).
 - API and web production builds: passed.
 - Product-variant browser workflow: passed at 375, 390, 768 and 1440 px.
 

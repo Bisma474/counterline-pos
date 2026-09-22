@@ -54,6 +54,7 @@ export interface LocalProduct {
   active: boolean
   revision: number
   image_url?: string | null  // optional; absent on older records means no image — show a placeholder
+  low_stock_threshold?: number  // optional; absent on older cached records means not yet re-synced — fall back to 5 (the migration's own default) until the next catalog refresh fills it in
 }
 
 export interface LocalStock {

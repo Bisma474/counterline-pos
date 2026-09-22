@@ -29,7 +29,7 @@ for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_ch
   '202609180001_terminal_name_uniqueness.sql', '202609180002_pos_orders_report_read_access.sql',
   '202609190001_audit_log.sql', '202609190001_store_onboarding_status.sql',
   '202609190002_remove_demo_catalog_seed.sql', '202609190003_store_sync_feed_init.sql',
-  '202609200001_service_role_only_rls_policies.sql', '202609220001_product_variants.sql']) {
+  '202609200001_service_role_only_rls_policies.sql', '202609220001_inventory_operations.sql', '202609220002_product_variants.sql']) {
   await db.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
 }
 const owner = randomUUID(), store = randomUUID()

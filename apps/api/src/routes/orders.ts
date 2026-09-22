@@ -197,8 +197,12 @@ async function push(req: import('express').Request, res: import('express').Respo
         await client.query(`insert into public.pos_inventory_movements(store_id,product_id,order_id,operation_id,delta,reason)
           values ($1,$2,$3,$4,$5,'sale')`, [operation.storeId, productId, operation.operationId, operation.operationId, -quantity])
         const stock = await client.query(`update public.pos_stock set current_stock=current_stock-$3, updated_at=now()
-          where store_id=$1 and product_id=$2 returning current_stock`, [operation.storeId, productId, quantity])
-        if (!stock.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Stock projection is missing for a product.')
+          where store_id=$1 and product_id=$2 and current_stock>=$3 returning current_stock`, [operation.storeId, productId, quantity])
+        if (!stock.rows[0]) {
+          const existing = await client.query('select current_stock from public.pos_stock where store_id=$1 and product_id=$2', [operation.storeId, productId])
+          if (!existing.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Stock projection is missing for a product.')
+          throw new ApiError(409, 'insufficient_stock', `Not enough stock for product ${productId} (have ${existing.rows[0].current_stock}, need ${quantity}).`)
+        }
         position += 1n
         await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
           values ($1,$2,'stock',$3,$4)`, [operation.storeId, position.toString(), productId, { product_id: productId, current_stock: stock.rows[0].current_stock }])
