@@ -39,6 +39,10 @@ export interface LocalTaxRate {
 }
 
 export interface LocalProduct {
+  parent_product_id?: string | null
+  parent_name?: string | null
+  option_values?: Record<string, string>
+  is_draft?: boolean
   id: string
   store_id: string
   sku: string
@@ -274,6 +278,13 @@ export class CounterlineDatabase extends Dexie {
     this.version(6).stores({
       refunds: 'id, order_id, store_id, created_at',
       refund_items: 'id, refund_id, order_item_id',
+    })
+
+    // Product variants: parent products with independently sellable options. Existing products
+    // are unaffected (parent_product_id stays undefined for them); this only adds the compound
+    // index a variant picker needs to look up siblings by parent.
+    this.version(7).stores({
+      products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id, [store_id+parent_product_id]',
     })
   }
 }

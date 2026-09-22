@@ -16,6 +16,7 @@ import type { LocalCustomer } from './db'
 export type { LineDiscount }
 
 export interface CartItem {
+  parentProductId?: string | null
   storeId: string
   productId: string
   name: string

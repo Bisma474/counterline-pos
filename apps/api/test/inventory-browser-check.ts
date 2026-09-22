@@ -62,6 +62,7 @@ const MIGRATIONS = [
   '202609190003_store_sync_feed_init.sql',
   '202609200001_service_role_only_rls_policies.sql',
   '202609220001_inventory_operations.sql',
+  '202609220002_product_variants.sql',
 ]
 for (const name of MIGRATIONS) {
   await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))

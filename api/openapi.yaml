@@ -18,6 +18,110 @@ servers:
   - url: /api
 security: []
 paths:
+  /catalog/product-parents:
+    get:
+      operationId: listProductVariants
+      summary: Owner or manager lists parents and all draft/published variants for one store
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: store_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Store-scoped parent and variant records, including current stock and revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [parents, variants]
+                properties:
+                  parents: { type: array, items: { $ref: '#/components/schemas/ProductParent' } }
+                  variants: { type: array, items: { $ref: '#/components/schemas/ProductVariant' } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createProductParent
+      summary: Create a nonsellable parent; ordinary products are unaffected
+      security: [{ ownerBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id, name]
+              properties:
+                store_id: { type: string, format: uuid }
+                name: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '201': { description: Parent created and published to the store change feed, content: { application/json: { schema: { type: object, properties: { parent: { $ref: '#/components/schemas/ProductParent' } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /catalog/product-parents/{id}:
+    patch:
+      operationId: renameProductParent
+      summary: Rename parent and current variants atomically without editing sale snapshots
+      security: [{ ownerBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id, name, revision]
+              properties:
+                store_id: { type: string, format: uuid }
+                name: { type: string, minLength: 1, maxLength: 80 }
+                revision: { type: string, pattern: '^[1-9][0-9]*$' }
+      responses:
+        '200': { description: Updated parent and variant feed entries committed, content: { application/json: { schema: { type: object, properties: { parent: { $ref: '#/components/schemas/ProductParent' } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /catalog/variants:
+    post:
+      operationId: createDraftVariant
+      summary: Create draft with an independent SKU, barcode, integer-cent price and opening stock
+      description: Active must be false on creation. Activate with PATCH after review. Opening stock is not editable afterward.
+      security: [{ ownerBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VariantWrite' }
+      responses:
+        '201': { description: Draft created, content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /catalog/variants/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      operationId: updateVariant
+      summary: Edit or activate/deactivate a variant using its last-read revision
+      description: Full editable fields required. revision is required; initial_stock is prohibited. Published variants can never return to draft. Names embed option details so existing order snapshots and reports preserve them.
+      security: [{ ownerBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VariantWrite' }
+      responses:
+        '200': { description: Variant and store change feed committed, content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: removeDraftVariant
+      summary: Remove only a never-published, unsold draft and publish a tombstone
+      security: [{ ownerBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id, revision]
+              properties:
+                store_id: { type: string, format: uuid }
+                revision: { type: string, pattern: '^[1-9][0-9]*$' }
+      responses:
+        '200': { description: Draft removed, content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid }, removed: { type: boolean, enum: [true] } } } } } }
+        default: { $ref: '#/components/responses/Error' }
   /devices/provision:
     post:
       operationId: provisionTerminal
@@ -202,6 +306,10 @@ paths:
               schema:
                 type: object
                 required: [store, catalog_version, checkpoint, categories, tax_rates, products, stock]
+                properties:
+                  products:
+                    type: array
+                    items: { $ref: '#/components/schemas/CatalogProduct' }
         default: { $ref: '#/components/responses/Error' }
   /orders/push:
     post:
@@ -234,7 +342,14 @@ paths:
       parameters:
         - { name: store_id, in: query, required: true, schema: { type: string, format: uuid }, description: Must equal the authenticated terminal store. }
       responses:
-        '200': { description: Store-scoped catalog snapshot for the unlocked cashier terminal }
+        '200':
+          description: Store-scoped catalog snapshot for the unlocked cashier terminal. Draft variants are excluded; parent metadata and option values travel on each sellable product. BIGINT amounts/revisions are decimal strings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  products: { type: array, items: { $ref: '#/components/schemas/CatalogProduct' } }
         default: { $ref: '#/components/responses/Error' }
   /pos/orders/push:
     post:
@@ -380,6 +495,66 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
   schemas:
+    CatalogProduct:
+      type: object
+      required: [id, store_id, sku, name, unit_price_cents, active, revision]
+      properties:
+        id: { type: string, format: uuid }
+        store_id: { type: string, format: uuid }
+        sku: { type: string }
+        name: { type: string, description: Variant names include immutable-at-sale parent and option details }
+        barcode: { type: string, nullable: true }
+        unit_price_cents: { type: string, pattern: '^[0-9]+$' }
+        revision: { type: string, pattern: '^[1-9][0-9]*$' }
+        active: { type: boolean }
+        parent_product_id: { type: string, format: uuid, nullable: true }
+        parent_name: { type: string, nullable: true }
+        option_values: { type: object, additionalProperties: { type: string }, description: Empty for ordinary products }
+        is_draft: { type: boolean }
+        category_id: { type: string, format: uuid, nullable: true }
+        tax_rate_id: { type: string, format: uuid, nullable: true }
+        image_url: { type: string, nullable: true }
+    ProductParent:
+      type: object
+      required: [id, store_id, name, revision]
+      properties:
+        id: { type: string, format: uuid }
+        store_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 80 }
+        revision: { type: string }
+    VariantOptions:
+      type: object
+      minProperties: 1
+      maxProperties: 4
+      description: Option names are 1–24 characters; values 1–40. Names are unique ignoring case. Combined parent/option display name is limited to 160 characters.
+      additionalProperties: { type: string, minLength: 1, maxLength: 40 }
+      example: { Size: Small, Color: Black }
+    VariantWrite:
+      type: object
+      required: [store_id, parent_product_id, sku, option_values, unit_price_cents, active]
+      properties:
+        store_id: { type: string, format: uuid }
+        parent_product_id: { type: string, format: uuid }
+        sku: { type: string, minLength: 1, maxLength: 80 }
+        barcode: { type: string, nullable: true, maxLength: 80, pattern: '^[A-Za-z0-9]+$' }
+        option_values: { $ref: '#/components/schemas/VariantOptions' }
+        unit_price_cents: { type: integer, minimum: 0, maximum: 1000000000 }
+        active: { type: boolean }
+        initial_stock: { type: integer, minimum: 0, maximum: 1000000, description: Creation only }
+        revision: { type: string, description: Required for updates }
+        category_id: { type: string, format: uuid, nullable: true }
+        tax_rate_id: { type: string, format: uuid, nullable: true }
+    ProductVariant:
+      allOf:
+        - { $ref: '#/components/schemas/VariantWrite' }
+        - type: object
+          required: [id, name, revision, is_draft, current_stock]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, maxLength: 160 }
+            is_draft: { type: boolean }
+            current_stock: { type: integer }
+            revision: { type: string }
     Customer:
       type: object
       required: [id, store_id, name, phone_normalized]
