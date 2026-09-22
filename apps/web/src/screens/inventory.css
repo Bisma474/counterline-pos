@@ -167,7 +167,10 @@
 }
 @media (max-width: 700px) {
   .inv-thead, .inv-row { grid-template-columns: 1.6fr 1fr 1.2fr; }
-  .inv-thead span:nth-child(4), .inv-row > *:nth-child(4) { display: none; }
+  /* Preserve the stock value on small screens: it is the point of this table.
+     Category and price are already hidden at 1100px; hide the editable threshold
+     instead, leaving Product, Stock, and Actions visible. */
+  .inv-thead span:nth-child(5), .inv-row > *:nth-child(5) { display: none; }
 }
 
 /* ─── Drawer tabs (Adjust / History) ─────────────────────────────── */

@@ -204,6 +204,28 @@ test('Phase 2 inventory operations: RBAC, transactional ledger, isolation, negat
       assert.equal(listed[0].new_quantity, 27)
     }
 
+    // A low-stock threshold is catalog state, not merely a local display preference. Updating it
+    // must advance the product revision and publish a product feed entry so other terminals can
+    // synchronize the new threshold without waiting for an unrelated stock movement.
+    {
+      const feedBefore = await feedPosition()
+      const before = await database.query<{ revision: string }>('select revision::text as revision from public.pos_products where store_id=$1 and id=$2', [store, productA])
+      const resp = await call('/inventory/threshold', managerToken, { method: 'PATCH', body: { store_id: store, product_id: productA, low_stock_threshold: 9 } })
+      assert.equal(resp.status, 200)
+      const body = await resp.json() as { low_stock_threshold: number; revision: string; checkpoint: string }
+      assert.equal(body.low_stock_threshold, 9)
+      assert.equal(body.revision, String(Number(before.rows[0].revision) + 1))
+      assert.equal(body.checkpoint, String(feedBefore + 1n))
+      const row = await database.query<{ low_stock_threshold: number; revision: string }>('select low_stock_threshold, revision::text as revision from public.pos_products where store_id=$1 and id=$2', [store, productA])
+      assert.equal(row.rows[0].low_stock_threshold, 9)
+      assert.equal(row.rows[0].revision, body.revision)
+      const feed = await database.query<{ entity_type: string; entity_id: string; payload: { product: { low_stock_threshold: number; revision: number } } }>('select entity_type, entity_id, payload from public.pos_change_feed where store_id=$1 and position=$2', [store, body.checkpoint])
+      assert.equal(feed.rows[0].entity_type, 'product')
+      assert.equal(feed.rows[0].entity_id, productA)
+      assert.equal(feed.rows[0].payload.product.low_stock_threshold, 9)
+      assert.equal(feed.rows[0].payload.product.revision, Number(body.revision))
+    }
+
     // Owner role works identically to manager for the same endpoint (both satisfy requireStoreManager).
     {
       const resp = await call('/inventory/adjust', ownerToken, { method: 'POST', body: { store_id: store, product_id: productA, delta: -2, reason: 'damaged', note: 'Two units crushed in the stockroom.', operation_id: randomUUID() } })

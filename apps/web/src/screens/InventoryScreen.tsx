@@ -272,6 +272,27 @@ export function InventoryScreen() {
     setLoading(true)
     setLoadErr('')
     try {
+      if (!navigator.onLine) {
+        const [products, categories, stock] = await Promise.all([
+          posDb.products.where('store_id').equals(id).toArray(),
+          posDb.categories.where('store_id').equals(id).toArray(),
+          posDb.server_stock.toArray(),
+        ])
+        const categoryNames = new Map(categories.map(category => [category.id, category.name]))
+        const stockByProduct = new Map(stock.map(row => [row.product_id, row.current_stock]))
+        const cached: InventoryRow[] = products.map(product => {
+          const current_stock = stockByProduct.get(product.id) ?? 0
+          const low_stock_threshold = product.low_stock_threshold ?? 5
+          return {
+            product_id: product.id, name: product.name, sku: product.sku, barcode: product.barcode,
+            category_id: product.category_id, category_name: product.category_id ? categoryNames.get(product.category_id) ?? null : null,
+            unit_price_cents: String(product.unit_price_cents), current_stock, low_stock_threshold,
+            status: computeStatus(current_stock, low_stock_threshold),
+          }
+        }).sort((a, b) => a.name.localeCompare(b.name))
+        setItems(cached)
+        return
+      }
       const data = await apiGet<{ items: InventoryRow[] }>(`/inventory?store_id=${encodeURIComponent(id)}`)
       setItems(data.items)
     } catch (e) {
@@ -551,7 +572,7 @@ export function InventoryScreen() {
           </div>
           {mode === 'list' && (
             <>
-              <button type="button" className="pc-btn-ghost" onClick={() => void loadInventory(storeId)} disabled={loading || !storeId}>
+              <button type="button" className="pc-btn-ghost" onClick={() => void loadInventory(storeId)} disabled={loading || !storeId || !isOnline}>
                 {loading ? 'Refreshing…' : 'Refresh'}
               </button>
               <button type="button" className="pc-btn-ghost" onClick={() => setAllMovementsOpen(true)} disabled={!storeId}>
@@ -585,7 +606,7 @@ export function InventoryScreen() {
           </div>
         )}
         {!isOnline && (
-          <div className="inv-offline-note">You're offline. Viewing cached data — adjustments and cycle counts require a connection.</div>
+          <div className="inv-offline-note">You're offline. Showing your last synchronized catalog — adjustments, movement history, and cycle counts require a connection.</div>
         )}
 
         {/* Search / category / state-filter toolbar — shared by the list table and the

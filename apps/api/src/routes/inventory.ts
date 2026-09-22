@@ -140,7 +140,9 @@ async function listMovements(req: Request, res: Response) {
 
 // ---------------------------------------------------------------------------
 // PATCH /inventory/threshold — update one product's configurable low-stock threshold.
-// Not a stock-changing action (no movement/change-feed entry), but still audited.
+// This is not a stock movement, but it is catalog state. Publish it through the same
+// revision/change-feed path as other catalog updates so another terminal can learn the
+// new threshold without relying on an eventual full snapshot refresh.
 // ---------------------------------------------------------------------------
 async function updateThreshold(req: Request, res: Response) {
   try {
@@ -157,14 +159,44 @@ async function updateThreshold(req: Request, res: Response) {
     const client = await db.connect()
     try {
       await client.query('begin')
-      const result = await client.query<{ name: string }>(
-        'update public.pos_products set low_stock_threshold=$1 where store_id=$2 and id=$3 returning name',
+      const feed = await client.query<{ last_position: string }>(
+        'select last_position::text as last_position from public.pos_sync_feed_state where store_id=$1 for update',
+        [storeId],
+      )
+      if (!feed.rows[0]) throw new ApiError(503, 'server_unavailable', 'Store is not initialized.')
+      const result = await client.query<{
+        id: string; store_id: string; sku: string; barcode: string | null; name: string
+        category_id: string | null; tax_rate_id: string | null; unit_price_cents: string
+        active: boolean; revision: string; image_url: string | null; low_stock_threshold: number
+      }>(
+        `update public.pos_products
+         set low_stock_threshold=$1, revision=revision+1
+         where store_id=$2 and id=$3
+         returning id, store_id, sku, barcode, name, category_id, tax_rate_id,
+                   unit_price_cents::text as unit_price_cents, active, revision::text as revision,
+                   image_url, low_stock_threshold`,
         [threshold, storeId, productId],
       )
       if (!result.rows[0]) throw new ApiError(404, 'not_found', 'Product not found in this store.')
-      await audit(client, storeId, actorId, 'inventory.threshold_updated', `${truncateForAudit(result.rows[0].name, 60)}: low-stock threshold set to ${threshold}`)
+      const product = result.rows[0]
+      const position = BigInt(feed.rows[0].last_position) + 1n
+      await client.query(
+        `insert into public.pos_change_feed (store_id, position, entity_type, entity_id, action, payload)
+         values ($1,$2,'product',$3,'upsert',$4::jsonb)`,
+        [storeId, position.toString(), productId, JSON.stringify({
+          product: {
+            id: product.id, store_id: product.store_id, sku: product.sku, barcode: product.barcode,
+            name: product.name, category_id: product.category_id, tax_rate_id: product.tax_rate_id,
+            unit_price_cents: Number(product.unit_price_cents), active: product.active,
+            revision: Number(product.revision), image_url: product.image_url,
+            low_stock_threshold: product.low_stock_threshold,
+          },
+        })],
+      )
+      await advanceFeed(client, storeId, position)
+      await audit(client, storeId, actorId, 'inventory.threshold_updated', `${truncateForAudit(product.name, 60)}: low-stock threshold set to ${threshold}`)
       await client.query('commit')
-      res.json({ product_id: productId, low_stock_threshold: threshold })
+      res.json({ product_id: productId, low_stock_threshold: threshold, revision: product.revision, checkpoint: position.toString() })
     } catch (reason) {
       await client.query('rollback')
       throw reason
