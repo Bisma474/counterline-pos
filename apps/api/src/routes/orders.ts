@@ -339,9 +339,9 @@ async function performRefund(
   let position = BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position)
   for (const [productId, quantity] of byProduct) {
     await client.query(
-      `insert into public.pos_inventory_movements (store_id, product_id, order_id, operation_id, delta, reason)
-       values ($1,$2,$3,gen_random_uuid(),$4,'refund')`,
-      [storeId, productId, orderId, quantity],
+      `insert into public.pos_inventory_movements (store_id, product_id, order_id, operation_id, delta, reason, actor_id)
+       values ($1,$2,$3,gen_random_uuid(),$4,'refund',$5)`,
+      [storeId, productId, orderId, quantity, userId],
     )
     const stock = await client.query(`update public.pos_stock set current_stock=current_stock+$3, updated_at=now()
       where store_id=$1 and product_id=$2 returning current_stock`, [storeId, productId, quantity])

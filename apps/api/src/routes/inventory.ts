@@ -122,13 +122,21 @@ async function listMovements(req: Request, res: Response) {
     const productId = req.query.product_id !== undefined ? uuid(req.query.product_id, 'product_id') : null
     const rawLimit = Number(req.query.limit ?? 50)
     const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 200 ? rawLimit : 50
+    // actor_name resolves two different ways depending on who the "actor" even is: manual
+    // adjustments/cycle counts and refunds set m.actor_id directly (an owner/manager, in
+    // auth.users/profiles); a sale has no actor_id at all — its actor is the cashier who rang it
+    // up, found via the order it belongs to (pos_orders.employee_id -> terminal_employees, a
+    // different identity system entirely, never in auth.users). coalesce() picks whichever path
+    // actually applies to this row's reason.
     const result = await db.query<MovementRow>(
       `select m.id, m.product_id, p.name as product_name, m.delta, m.reason, m.adjustment_reason, m.note,
-              m.old_quantity, m.new_quantity, pr.full_name as actor_name, m.cycle_count_id,
+              m.old_quantity, m.new_quantity, coalesce(pr.full_name, te.name) as actor_name, m.cycle_count_id,
               m.server_received_at
        from public.pos_inventory_movements m
        left join public.pos_products p on p.store_id = m.store_id and p.id = m.product_id
        left join public.profiles pr on pr.id = m.actor_id
+       left join public.pos_orders o on o.store_id = m.store_id and o.id = m.order_id and m.reason = 'sale'
+       left join public.terminal_employees te on te.store_id = m.store_id and te.id = o.employee_id
        where m.store_id = $1 and ($2::uuid is null or m.product_id = $2)
        order by m.server_received_at desc, m.id desc
        limit $3`,

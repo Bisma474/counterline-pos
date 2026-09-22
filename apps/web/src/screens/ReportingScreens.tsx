@@ -18,6 +18,7 @@ import {
   type CashierShiftSummary,
 } from '../lib/reporting'
 import { currentAccess } from '../terminal-auth/cache'
+import type { Employee } from '../terminal-auth/types'
 import { configuredApiUrl, loadCatalog } from '../lib/catalog'
 import { classifySyncState, type SyncState } from '../lib/order-sync-core'
 import { fetchDailySummary, fetchOrdersPage, fetchOversold, type ServerOversoldProduct } from '../lib/server-reports'
@@ -603,6 +604,10 @@ export function ReportsScreen() {
   )
 }
 
+interface RecentOrderWithCashier extends RecentOrderSummary {
+  employeeName: string | null
+}
+
 interface CashierDashboardState {
   cashier: string
   terminal: string
@@ -612,7 +617,7 @@ interface CashierDashboardState {
   online: boolean
   syncCounts: Record<SyncState, number>
   shift: CashierShiftSummary
-  recentOrders: RecentOrderSummary[]
+  recentOrders: RecentOrderWithCashier[]
   managerApproval: boolean
 }
 
@@ -644,7 +649,13 @@ export function CashierDashboardScreen() {
 
         const terminalOrders = allStoreOrders.filter(o => o.receipt_number.startsWith(cache.device.receipt_prefix))
         const shift = calculateCashierShift(terminalOrders, payments, cache.device.store_id, today, timezone, refunds)
-        const recentOrders = getRecentOrders(terminalOrders, items, payments, cache.device.store_id, 5)
+        // A shared terminal can be used by several cashiers across a day (each logging in with
+        // their own PIN), so "recent receipts" here isn't just this session's sales — tag each
+        // one with who actually rang it up, from the terminal's own cached employee roster
+        // (cache.employees), not a server round-trip.
+        const employeeNames = new Map<string, string>(cache.employees.map((employee: Employee) => [employee.id, employee.name]))
+        const recentOrders: RecentOrderWithCashier[] = getRecentOrders(terminalOrders, items, payments, cache.device.store_id, 5)
+          .map(order => ({ ...order, employeeName: order.employeeId ? employeeNames.get(order.employeeId) ?? null : null }))
 
         return {
           cashier: employee.name,
@@ -763,7 +774,7 @@ export function CashierDashboardScreen() {
                 <li key={o.id} className="cashier-recent-row">
                   <div className="receipt-meta">
                     <strong>{o.receiptNumber}</strong>
-                    <small>{new Date(o.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {o.itemCount} items{o.refunded && <span className="sync-pill refunded" style={{ marginLeft: 6 }}>refunded</span>}</small>
+                    <small>{new Date(o.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {o.itemCount} items{o.employeeName && ` · ${o.employeeName}`}{o.refunded && <span className="sync-pill refunded" style={{ marginLeft: 6 }}>refunded</span>}</small>
                   </div>
                   <div className="receipt-end">
                     <b><Money cents={o.totalCents} currency={state.currency} /></b>

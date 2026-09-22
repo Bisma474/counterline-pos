@@ -207,6 +207,7 @@ export interface RecentOrderSummary {
   itemCount: number
   syncStatus: 'synced' | 'pending' | 'failed'
   refunded: boolean
+  employeeId: string | null
 }
 
 export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], payments: LocalPayment[], storeId: string, limit = 5): RecentOrderSummary[] {
@@ -228,6 +229,7 @@ export function getRecentOrders(orders: LocalOrder[], items: LocalOrderItem[], p
     itemCount: itemCountMap.get(o.id) ?? 0,
     syncStatus: o.sync_status,
     refunded: Boolean(o.refunded_at),
+    employeeId: o.employee_id ?? null,
   }))
 }
 
