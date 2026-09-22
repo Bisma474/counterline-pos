@@ -242,6 +242,7 @@ async function adjustStock(req: Request, res: Response) {
     const note = String(body.note ?? '').trim()
     if (!note) throw new ApiError(422, 'validation_failed', 'A note is required for every manual adjustment.')
     if (note.length > 500) throw new ApiError(422, 'validation_failed', 'Note must be 500 characters or fewer.')
+    const allowNegative = body.allow_negative === true
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex')
 
     // 1+2: authenticate + authorize (owner/manager). 3: store scope is storeId itself, verified below.
@@ -268,9 +269,15 @@ async function adjustStock(req: Request, res: Response) {
       // 4+5: resolve and lock the authoritative stock row.
       const stockable = await lockStockableForUpdate(client, storeId, productStockable(productId))
       if (!stockable) throw new ApiError(422, 'cross_store_reference', 'Product not found in this store.')
-      // 6+7: validate the operation, compute old -> new. Never clamp — negative stock is valid.
+      // 6+7: validate the operation, compute old -> new. Never clamp — negative stock is valid,
+      // but a delta-based negative result is often a fat-fingered magnitude, so require an
+      // explicit confirmation from the client before writing it (cycle counts, which write a
+      // physically-counted absolute value rather than a delta, are exempt from this check).
       const oldQuantity = stockable.current_stock
       const newQuantity = oldQuantity + delta
+      if (newQuantity < 0 && !allowNegative) {
+        throw new ApiError(422, 'confirmation_required', `This adjustment would take ${stockable.name} to ${newQuantity}. Resubmit with allow_negative to confirm.`)
+      }
       // 8: immutable movement row.
       const movement = await client.query<{ id: string }>(
         `insert into public.pos_inventory_movements

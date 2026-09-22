@@ -292,12 +292,21 @@ test('Phase 2 inventory operations: RBAC, transactional ledger, isolation, negat
 
     // ═══════════════════════════════════════════════════════════════════════════════════════
     // 8. Negative / oversold stock — never clamp to zero; it must be returned, stored and listed
-    // as the true negative number.
+    // as the true negative number. Landing on a negative result requires an explicit
+    // allow_negative confirmation from the client; without it the request is rejected and
+    // nothing is written.
     // ═══════════════════════════════════════════════════════════════════════════════════════
     {
       const stockBefore = await stockOf(productA)
       const delta = -(stockBefore + 15)   // guaranteed to land exactly on -15 regardless of prior scenarios' deltas
-      const resp = await call('/inventory/adjust', managerToken, { method: 'POST', body: { store_id: store, product_id: productA, delta, reason: 'lost', note: 'Stock count shortfall investigated and confirmed lost.', operation_id: randomUUID() } })
+
+      const unconfirmed = await call('/inventory/adjust', managerToken, { method: 'POST', body: { store_id: store, product_id: productA, delta, reason: 'lost', note: 'Stock count shortfall investigated and confirmed lost.', operation_id: randomUUID() } })
+      assert.equal(unconfirmed.status, 422)
+      const unconfirmedBody = await unconfirmed.json() as { code: string }
+      assert.equal(unconfirmedBody.code, 'confirmation_required')
+      assert.equal(await stockOf(productA), stockBefore)
+
+      const resp = await call('/inventory/adjust', managerToken, { method: 'POST', body: { store_id: store, product_id: productA, delta, reason: 'lost', note: 'Stock count shortfall investigated and confirmed lost.', operation_id: randomUUID(), allow_negative: true } })
       assert.equal(resp.status, 201)
       const body = await resp.json() as { old_quantity: number; new_quantity: number }
       assert.equal(body.old_quantity, stockBefore)
@@ -396,6 +405,10 @@ test('Phase 2 inventory operations: RBAC, transactional ledger, isolation, negat
       // aStock is negative (-15); counted_quantity must be a non-negative integer, so a real
       // counter physically counts 0 items on the shelf — variance_preview then correctly reports
       // the gap between the physical count (0) and the -15 the ledger shows as still "owed".
+      // This also doubles as the regression proof that adjustStock's allow_negative confirmation
+      // guard (see scenario 8 above) does NOT apply to cycle counts: this PATCH+submit succeeds
+      // with no allow_negative field anywhere, because it writes a physically-counted absolute
+      // value rather than a delta.
       assert.equal(previewA.status, 200)
       const previewAJson = await previewA.json() as { variance_preview: number }
       assert.equal(previewAJson.variance_preview, 0 - aStock)

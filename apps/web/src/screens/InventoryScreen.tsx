@@ -610,35 +610,41 @@ export function InventoryScreen() {
         )}
 
         {/* Search / category / state-filter toolbar — shared by the list table and the
-            cycle-count product picker, since both browse the same inventory list. */}
-        <div className="pc-toolbar">
-          <div className="pc-search">
-            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-              <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M10 10 13.5 13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            <input
-              className="pc-search-input"
-              type="search"
-              placeholder="Search by name, SKU or barcode…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              aria-label="Search products"
-            />
-            {query && <button type="button" className="pc-search-clear" onClick={() => setQuery('')} aria-label="Clear search">✕</button>}
-          </div>
-          <select className="pc-cat-select" value={catFilter} onChange={(e) => setCatFilter(e.target.value)} aria-label="Filter by category">
-            <option value="all">All categories</option>
-            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
-        <div className="inv-state-filters" style={{ marginBottom: 18 }}>
-          {(['all', 'normal', 'low', 'out', 'oversold'] as const).map((s) => (
-            <button key={s} type="button" className={`inv-state-pill ${stateFilter === s ? 'active' : ''}`} onClick={() => setStateFilter(s)}>
-              {STATE_LABEL[s]} <span className="count">{stateCounts[s]}</span>
-            </button>
-          ))}
-        </div>
+            cycle-count product picker, since both browse the same inventory list. Hidden while
+            actively counting: that step renders the session's own item list and doesn't consult
+            these filters, so showing them there would look interactive but do nothing. */}
+        {!(mode === 'cycle-count' && cycleView === 'count') && (
+          <>
+            <div className="pc-toolbar">
+              <div className="pc-search">
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+                  <path d="M10 10 13.5 13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                <input
+                  className="pc-search-input"
+                  type="search"
+                  placeholder="Search by name, SKU or barcode…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  aria-label="Search products"
+                />
+                {query && <button type="button" className="pc-search-clear" onClick={() => setQuery('')} aria-label="Clear search">✕</button>}
+              </div>
+              <select className="pc-cat-select" value={catFilter} onChange={(e) => setCatFilter(e.target.value)} aria-label="Filter by category">
+                <option value="all">All categories</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div className="inv-state-filters" style={{ marginBottom: 18 }}>
+              {(['all', 'normal', 'low', 'out', 'oversold'] as const).map((s) => (
+                <button key={s} type="button" className={`inv-state-pill ${stateFilter === s ? 'active' : ''}`} onClick={() => setStateFilter(s)}>
+                  {STATE_LABEL[s]} <span className="count">{stateCounts[s]}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {mode === 'list' && (
           <>
@@ -969,6 +975,7 @@ function ProductDrawer({
   const [busy, setBusy] = useState(false)
   const [submitErr, setSubmitErr] = useState('')
   const [lastResult, setLastResult] = useState<AdjustResult | null>(null)
+  const [confirmNegative, setConfirmNegative] = useState(false)
 
   const [movements, setMovements] = useState<MovementRow[] | null>(null)
   const [mvErr, setMvErr] = useState('')
@@ -992,6 +999,7 @@ function ProductDrawer({
   const validMagnitude = magnitude.trim() !== '' && Number.isInteger(magnitudeNum) && magnitudeNum > 0 && magnitudeNum <= 1_000_000
   const delta = validMagnitude ? (sign === 'increase' ? magnitudeNum : -magnitudeNum) : 0
   const resulting = current + delta
+  const wouldGoNegative = validMagnitude && resulting < 0
 
   const validate = (): typeof errs => {
     const e: typeof errs = {}
@@ -1007,11 +1015,13 @@ function ProductDrawer({
     const fieldErrs = validate()
     if (Object.keys(fieldErrs).length) { setErrs(fieldErrs); return }
     if (!isOnline) { setSubmitErr('Connect to the internet to adjust stock.'); return }
+    if (wouldGoNegative && !confirmNegative) { setConfirmNegative(true); return }
     setBusy(true)
     setSubmitErr('')
     try {
       const result = await apiSend<AdjustResult>('POST', '/inventory/adjust', {
         store_id: storeId, product_id: row.product_id, delta, reason, note: note.trim(), operation_id: operationId,
+        allow_negative: wouldGoNegative,
       })
       await posDb.server_stock.put({ product_id: result.product_id, current_stock: result.new_quantity, updated_at: new Date().toISOString() })
       setCurrent(result.new_quantity)
@@ -1022,6 +1032,7 @@ function ProductDrawer({
       setReason('')
       setNote('')
       setErrs({})
+      setConfirmNegative(false)
       setMovements(null)
       if (tab === 'history') loadMovements()
     } catch (e) {
@@ -1079,8 +1090,8 @@ function ProductDrawer({
                 <label>Change amount</label>
                 <div className="inv-delta-control">
                   <div className="inv-sign-toggle">
-                    <button type="button" className={`inv-sign-btn increase ${sign === 'increase' ? 'active' : ''}`} onClick={() => setSign('increase')} aria-pressed={sign === 'increase'}>+</button>
-                    <button type="button" className={`inv-sign-btn decrease ${sign === 'decrease' ? 'active' : ''}`} onClick={() => setSign('decrease')} aria-pressed={sign === 'decrease'}>−</button>
+                    <button type="button" className={`inv-sign-btn increase ${sign === 'increase' ? 'active' : ''}`} onClick={() => { setSign('increase'); setConfirmNegative(false) }} aria-pressed={sign === 'increase'}>+</button>
+                    <button type="button" className={`inv-sign-btn decrease ${sign === 'decrease' ? 'active' : ''}`} onClick={() => { setSign('decrease'); setConfirmNegative(false) }} aria-pressed={sign === 'decrease'}>−</button>
                   </div>
                   <input
                     type="number"
@@ -1089,7 +1100,7 @@ function ProductDrawer({
                     step={1}
                     className={`inv-magnitude-input ${errs.magnitude ? 'err' : ''}`}
                     value={magnitude}
-                    onChange={(e) => { setMagnitude(e.target.value); setErrs((prev) => ({ ...prev, magnitude: undefined })) }}
+                    onChange={(e) => { setMagnitude(e.target.value); setErrs((prev) => ({ ...prev, magnitude: undefined })); setConfirmNegative(false) }}
                     placeholder="0"
                   />
                 </div>
@@ -1102,6 +1113,11 @@ function ProductDrawer({
                   {validMagnitude ? resulting : current}
                 </span>
               </div>
+              {wouldGoNegative && confirmNegative && (
+                <div className="pc-alert error" role="alert">
+                  <span>This will take stock to {resulting}. Click "Confirm adjustment" to proceed.</span>
+                </div>
+              )}
 
               <div className="pc-field">
                 <label htmlFor="adj-reason">Reason</label>
@@ -1147,7 +1163,7 @@ function ProductDrawer({
         {tab === 'adjust' && (
           <div className="pc-drawer-foot">
             <button type="button" className="pc-submit" disabled={busy || !isOnline} onClick={() => void submit()}>
-              {busy ? 'Saving…' : 'Save adjustment'}
+              {busy ? 'Saving…' : wouldGoNegative && confirmNegative ? 'Confirm adjustment' : 'Save adjustment'}
             </button>
             <button type="button" className="pc-cancel" onClick={onClose} disabled={busy}>Close</button>
           </div>
