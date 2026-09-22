@@ -146,7 +146,7 @@ async function push(req: import('express').Request, res: import('express').Respo
       const store = await client.query('select name,timezone,currency from public.stores where id=$1', [operation.storeId])
       if (!store.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Store no longer exists.')
       const productIds = [...new Set(operation.items.map(item => item.product_id))]
-      const products = await client.query('select id from public.pos_products where store_id=$1 and id = any($2::uuid[])', [operation.storeId, productIds])
+      const products = await client.query('select id from public.pos_products where store_id=$1 and id = any($2::uuid[]) and not is_draft', [operation.storeId, productIds])
       if (products.rowCount !== productIds.length) throw new ApiError(422, 'cross_store_reference', 'An item refers to a product outside this store.')
       if (operation.order.customer_id) {
         const customer = await client.query('select 1 from public.pos_customers where store_id=$1 and id=$2', [operation.storeId, operation.order.customer_id])

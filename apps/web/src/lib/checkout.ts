@@ -24,7 +24,13 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
   const now = new Date().toISOString()
   let receiptNumber = ''
   await posDb.transaction('rw', [posDb.orders, posDb.order_items, posDb.payments,
-    posDb.outbox, posDb.stock_adjustments, posDb.sync_metadata], async () => {
+    posDb.outbox, posDb.stock_adjustments, posDb.sync_metadata, posDb.products], async () => {
+      for (const item of items) {
+        const product = await posDb.products.get(item.productId)
+        if ((item.parentProductId && !product) || (product && (product.store_id !== storeId || !product.active || product.is_draft))) {
+          throw new Error(`${item.name} is no longer available for sale. Remove it from the cart and refresh the catalog.`)
+        }
+      }
       const prefixRow = await posDb.sync_metadata.get(`receipt_prefix:${storeId}`)
       const prefix = prefixRow?.value ?? `LOCAL-${crypto.randomUUID().toUpperCase()}-`
       const sequenceKey = `receipt_seq:${storeId}`

@@ -1,3 +1,4 @@
+import { VariantManagement } from '../variants/VariantManagement'
 /**
  * ProductCatalogScreen — Owner / Manager Backoffice
  * Premium SaaS / POS redesign built with Counterline's brand tokens:
@@ -431,6 +432,7 @@ export function ProductCatalogScreen() {
       </div>
 
       {/* ── Stat Strip ── */}
+      {storeId && <VariantManagement key={storeId} storeId={storeId} currency={currency} categories={categories} taxRates={taxRates} />}
       {products !== null && (
         <div className="pc-stats-strip">
           <div className="pc-stat">

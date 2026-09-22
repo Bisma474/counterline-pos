@@ -1,3 +1,4 @@
+import { VariantPicker } from '../variants/VariantPicker'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { calculateDiscountedLine, discountNeedsManagerApproval, formatCents, parseCents } from '../../../../packages/domain/src/money'
@@ -12,6 +13,12 @@ import { CustomerSelector } from './CustomerScreen'
 import { liveQuery } from 'dexie'
 
 export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
+  const [variantParent, setVariantParent] = useState<string | null>(null)
+  const variantTrigger = useRef<HTMLButtonElement | null>(null)
+  const closeVariants = () => {
+    setVariantParent(null)
+    requestAnimationFrame(() => variantTrigger.current?.focus())
+  }
   const [products, setProducts] = useState<LocalProduct[]>([])
   const [categories, setCategories] = useState<LocalCategory[]>([])
   const [stock, setStock] = useState<Record<string, number>>({})
@@ -52,6 +59,23 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const setStoreContext = usePosStore(state => state.setStoreContext)
   const setCatalogStatus = usePosStore(state => state.setCatalogStatus)
   const totals = usePosStore(state => state.totals)
+  useEffect(() => {
+    if (!storeId) return
+    const subscription = liveQuery(async () => {
+      const [available, rates, stocks, adjustments] = await Promise.all([
+        posDb.products.where('store_id').equals(storeId).toArray(), posDb.tax_rates.where('store_id').equals(storeId).toArray(),
+        posDb.server_stock.toArray(), posDb.stock_adjustments.toArray(),
+      ])
+      return {available,rates,stocks,adjustments}
+    }).subscribe({next: ({available,rates,stocks,adjustments}) => {
+      setProducts(available.filter(product=>product.active && !product.is_draft))
+      setTaxRates(Object.fromEntries(rates.filter(rate=>rate.active).map(rate=>[rate.id,rate.rate_bps])))
+      const base = Object.fromEntries(stocks.map(row=>[row.product_id,row.current_stock]))
+      for(const adjustment of adjustments) base[adjustment.product_id]=(base[adjustment.product_id] ?? 0)+adjustment.delta
+      setStock(base)
+    },error:()=>setError('Unable to read the saved catalog. Reload the register.')})
+    return ()=>subscription.unsubscribe()
+  },[storeId])
   useEffect(() => {
     if (!storeId) return
     const subscription = liveQuery(() => posDb.outbox.where('store_id').equals(storeId).toArray()).subscribe(entries => {
@@ -118,7 +142,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
           ])
           if (!active) return
           if (config) { setCurrency(config.currency); setCatalogVersion(config.catalog_version); setStoreContext(id, config.name) }
-          setProducts(available.filter(product => product.active))
+          setProducts(available.filter(product => product.active && !product.is_draft))
           setCategories(cats.filter(category => category.active))
           setTaxRates(Object.fromEntries(rates.filter(rate => rate.active).map(rate => [rate.id, rate.rate_bps])))
           const base = Object.fromEntries(stocks.map((row: LocalStock) => [row.product_id, row.current_stock]))
@@ -152,6 +176,8 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       product.barcode?.toLowerCase().includes(term)
     return matches && (categoryId === 'all' || product.category_id === categoryId)
   }), [products, query, categoryId])
+  const cards = visible.filter((product,index,all) => !product.parent_product_id || all.findIndex(row=>row.parent_product_id===product.parent_product_id)===index)
+  const activeVariants = variantParent ? products.filter(product=>product.parent_product_id===variantParent) : []
   let total = { subtotalCents: 0, discountCents: 0, taxCents: 0, totalCents: 0 }
   let cartError = ''
   try { total = totals() } catch (reason) { cartError = reason instanceof Error ? reason.message : 'Cart amount is invalid.' }
@@ -161,9 +187,10 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const needsApproval = terminal && approvalNeededIds.length > 0 && !approvalValid
 
   function addProductToCart(product: LocalProduct) {
+    if (!product.active || product.is_draft) { setError('This variant is not available for sale.'); return }
     if (product.tax_rate_id && taxRates[product.tax_rate_id] === undefined) { setError(`${product.name} needs a tax rate that has not synced to this browser yet.`); return }
     setError('')
-    addItem({ storeId, productId: product.id, name: product.name, sku: product.sku,
+    addItem({ storeId, productId: product.id, parentProductId: product.parent_product_id, name: product.name, sku: product.sku,
       unitPriceCents: product.unit_price_cents, taxRateBps: taxRates[product.tax_rate_id ?? ''] ?? 0, catalogVersion })
   }
 
@@ -171,11 +198,9 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
     const code = query.trim()
     if (!code) return
     setScanChoices(null)
-    const skuMatch = products.find(product => product.sku.toLowerCase() === code.toLowerCase())
-    if (skuMatch) { addProductToCart(skuMatch); setQuery(''); setScanNotice(`Added ${skuMatch.name} from scan.`); searchRef.current?.focus(); return }
-    const barcodeMatches = products.filter(product => product.barcode && product.barcode.toLowerCase() === code.toLowerCase())
-    if (barcodeMatches.length === 1) { addProductToCart(barcodeMatches[0]); setQuery(''); setScanNotice(`Added ${barcodeMatches[0].name} from scan.`); searchRef.current?.focus(); return }
-    if (barcodeMatches.length > 1) { setScanChoices(barcodeMatches); return }
+    const matches = products.filter(product => product.sku.toLowerCase() === code.toLowerCase() || product.barcode?.toLowerCase() === code.toLowerCase())
+    if (matches.length === 1) { addProductToCart(matches[0]); setQuery(''); setScanNotice(`Added ${matches[0].name} from scan.`); searchRef.current?.focus(); return }
+    if (matches.length > 1) { setScanChoices(matches); return }
     setError(`Product not found for barcode: ${code}`)
   }
 
@@ -238,11 +263,11 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
           <button type="button" className="secondary-cta" onClick={() => pickScanChoice(product)}>Add</button></li>)}</ul>
       </div>}
       {!loading && !error && !visible.length && <p className="screen-note">{products.length ? 'No products match your search.' : 'No catalog saved. Connect to load this store’s products.'}</p>}
-      <div className="catalog-grid">{visible.map(product => <button type="button" className="catalog-card" key={product.id}
+      <div className="catalog-grid">{cards.map(product => <button type="button" className="catalog-card" key={product.id}
         disabled={Boolean(product.tax_rate_id && taxRates[product.tax_rate_id] === undefined)}
-        onClick={() => addProductToCart(product)}>
-        {product.image_url ? <img className="product-art-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="product-art" aria-hidden="true" />}<strong>{product.name}</strong>
-        <span>{formatCents(product.unit_price_cents, currency)}</span><small>{stock[product.id] ?? 0} in stock · {product.sku}</small>
+        onClick={event => { if(product.parent_product_id) { variantTrigger.current=event.currentTarget;setVariantParent(product.parent_product_id) } else addProductToCart(product) }}>
+        {product.image_url ? <img className="product-art-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="product-art" aria-hidden="true" />}<strong>{product.parent_name || product.name}</strong>
+        {product.parent_product_id ? <span>{products.filter(row=>row.parent_product_id===product.parent_product_id).length} active variants - choose options</span> : <span>{formatCents(product.unit_price_cents, currency)}</span>}<small>{product.parent_product_id ? 'Stock shown per variant' : `${stock[product.id] ?? 0} in stock · ${product.sku}`}</small>
       </button>)}</div>
     </div>
     <aside className="sale-cart"><div className="cart-title"><h2>Current Sale</h2><button className="text-action" type="button" onClick={() => { if (window.confirm('Void this sale and clear the cart? This cannot be undone.')) clear() }} disabled={!cart.length}>Clear cart</button></div>
@@ -293,6 +318,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       <Link className={`cta ${proceedBlocked ? 'cta-disabled' : ''}`} to={!proceedBlocked ? terminal ? '/pos/payment' : '/payment' : terminal ? '/pos/register' : '/register'}
         aria-disabled={proceedBlocked}>Proceed to payment <b aria-hidden="true">→</b></Link>
     </aside>
+    {variantParent && <VariantPicker products={activeVariants} stock={stock} currency={currency} onClose={closeVariants} onSelect={product=>{addProductToCart(product);closeVariants()}} />}
     {customerOpen && storeId && customerAuthorized && <CustomerSelector storeId={storeId} terminal={terminal} onClose={() => setCustomerOpen(false)} />}
     {approvalOpen && terminalCache && <ManagerApprovalModal cache={terminalCache} reason={approvalReason}
       onClose={() => setApprovalOpen(false)}

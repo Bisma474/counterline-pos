@@ -116,7 +116,7 @@ export async function loadCatalog(storeId: string, terminal = false): Promise<'u
     return { ...product, unit_price_cents: price, revision }
   })
   await posDb.transaction('rw', [posDb.store_config, posDb.categories, posDb.tax_rates,
-    posDb.products, posDb.server_stock, posDb.stock_adjustments, posDb.outbox], async () => {
+    posDb.products, posDb.server_stock, posDb.stock_adjustments, posDb.outbox, posDb.sync_metadata], async () => {
       const unresolved = await posDb.outbox.where('store_id').equals(storeId).toArray()
       if (unresolved.some(entry => entry.status !== 'synced' && entry.failure_kind !== 'validation')) {
         throw new Error('Pending sync outcomes must be resolved before refreshing stock.')
@@ -132,9 +132,10 @@ export async function loadCatalog(storeId: string, terminal = false): Promise<'u
       await posDb.tax_rates.bulkPut(snapshot.tax_rates)
       await posDb.products.bulkPut(products)
       await posDb.server_stock.bulkPut(snapshot.stock)
+      await posDb.sync_metadata.put({key:`catalog_checkpoint:${storeId}`,value:snapshot.checkpoint})
       const adjustments = await posDb.stock_adjustments.toArray()
       for (const adjustment of adjustments) {
-        if (adjustment.accepted_checkpoint && BigInt(adjustment.accepted_checkpoint) <= BigInt(snapshot.checkpoint)) {
+        if (oldProducts.includes(adjustment.product_id) && adjustment.accepted_checkpoint && BigInt(adjustment.accepted_checkpoint) <= BigInt(snapshot.checkpoint)) {
           await posDb.stock_adjustments.delete([adjustment.operation_id, adjustment.product_id])
         }
       }

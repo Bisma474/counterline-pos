@@ -18,7 +18,7 @@ test('device customer API enforces search scope and returns durable replay resul
       create function auth.uid() returns uuid language sql as 'select null::uuid';
       create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
     for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_checkout_sync.sql',
-      '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql', '202609160001_customers_and_sale_attachment.sql']) {
+      '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql', '202609160001_customers_and_sale_attachment.sql', '202609220001_product_variants.sql']) {
       await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
     }
     const owner = randomUUID(), store = randomUUID(), otherStore = randomUUID(), device = randomUUID(), employee = randomUUID()

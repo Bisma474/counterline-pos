@@ -1,3 +1,4 @@
+import { variantsRouter } from './variants.js'
 import { Router } from 'express'
 import { db } from '../db.js'
 import { requireStoreMember, requireStoreManager, sendApiError, ApiError } from './auth.js'
@@ -19,7 +20,7 @@ async function snapshot(req: import('express').Request, res: import('express').R
       const store = await client.query('select id,name,timezone,currency from public.stores where id = $1', [storeId])
       const categories = await client.query('select id,store_id,name,active from public.pos_categories where store_id = $1 order by name', [storeId])
       const taxRates = await client.query('select id,store_id,name,rate_bps,active from public.pos_tax_rates where store_id = $1', [storeId])
-      const products = await client.query('select id,store_id,sku,barcode,name,category_id,tax_rate_id,unit_price_cents::text,active,revision::text,image_url from public.pos_products where store_id = $1 order by name', [storeId])
+      const products = await client.query(`select p.id,p.store_id,p.sku,p.barcode,p.name,p.category_id,p.tax_rate_id,p.unit_price_cents::text,p.active,p.revision::text,p.image_url,p.parent_product_id,p.option_values,p.is_draft,parent.name as parent_name from public.pos_products p left join public.pos_product_parents parent on parent.id=p.parent_product_id where p.store_id=$1 and (not $2::boolean or not p.is_draft) order by p.name`, [storeId, terminal])
       const stock = await client.query('select product_id,current_stock,updated_at from public.pos_stock where store_id = $1', [storeId])
       await client.query('commit')
       res.json({ store: store.rows[0], catalog_version: 1, checkpoint: feed.rows[0].last_position,
@@ -183,6 +184,10 @@ async function createProduct(req: import('express').Request, res: import('expres
       )
       if (skuChk.rowCount) throw new ApiError(409, 'sku_conflict', 'A product with this SKU already exists in this store.')
 
+      const variantConflict = await client.query(`select 1 from public.pos_products where store_id=$1 and parent_product_id is not null and
+        (lower(sku)=lower($2) or lower(barcode)=lower($2) or ($3::text is not null and (lower(sku)=lower($3) or lower(barcode)=lower($3))))`, [storeId,sku,rawBarcode])
+      if (variantConflict.rowCount) throw new ApiError(409,'sku_conflict','SKU or barcode conflicts with a variant in this store.')
+
       // Insert product
       let productRes
       try {
@@ -264,6 +269,7 @@ async function createProduct(req: import('express').Request, res: import('expres
 
 export const catalogRouter = Router()
 export const terminalCatalogRouter = Router()
+catalogRouter.use(variantsRouter)
 catalogRouter.get('/snapshot', (req, res) => void snapshot(req, res))
 catalogRouter.post('/products', (req, res) => void createProduct(req, res))
 terminalCatalogRouter.get('/snapshot', (req, res) => void snapshot(req, res, true))

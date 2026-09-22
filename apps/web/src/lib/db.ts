@@ -39,6 +39,10 @@ export interface LocalTaxRate {
 }
 
 export interface LocalProduct {
+  parent_product_id?: string | null
+  parent_name?: string | null
+  option_values?: Record<string, string>
+  is_draft?: boolean
   id: string
   store_id: string
   sku: string
@@ -237,6 +241,10 @@ export class CounterlineDatabase extends Dexie {
           discount_applied_cents: item.discount_applied_cents ?? 0, taxable_cents: item.taxable_cents ?? item.subtotal_cents })
       }
     })
+    this.version(6).stores({
+      products: 'id, &[store_id+sku], [store_id+barcode], [store_id+category_id], active, store_id, [store_id+parent_product_id]',
+    })
+
   }
 }
 
