@@ -148,6 +148,7 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
             <button type="button" className="cta" onClick={() => void submitRefund()} disabled={refunding || !Object.keys(selected).length}>
               {refunding ? 'Refunding…' : 'Refund selected items'}
             </button>
+            <Link className="secondary-cta" to={`/orders/${receipt.order.id}/exchange`}>Exchange items instead →</Link>
             {refundError && <p role="alert" className="form-notice error">{refundError}</p>}
           </> : <p role="status">Every item on this receipt has been fully refunded.</p>}
         </div>}</>}
