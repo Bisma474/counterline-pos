@@ -125,6 +125,85 @@ export function validateOperation(raw: unknown) {
       reference: payment.reference === null || payment.reference === undefined ? null : text(payment.reference, 'Card reference', 120) } }
 }
 
+/**
+ * Inserts an already-validated order/items/payment, decrements stock, and appends the matching
+ * change-feed entries — everything `push()` does to an order once it's past request-level
+ * concerns (terminal/member auth, the idempotency-ledger replay check). Composable with other
+ * per-store-locked writes (see `exchange()`, which runs this alongside `performRefund` inside one
+ * transaction) — this function does not begin/commit or write its own ledger row; the caller does.
+ */
+async function performOrderCreation(client: PoolClient, operation: ReturnType<typeof validateOperation>): Promise<{ acceptedCheckpoint: string }> {
+  const store = await client.query('select name,timezone,currency from public.stores where id=$1', [operation.storeId])
+  if (!store.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Store no longer exists.')
+  const productIds = [...new Set(operation.items.map(item => item.product_id))]
+  const products = await client.query('select id from public.pos_products where store_id=$1 and id = any($2::uuid[])', [operation.storeId, productIds])
+  if (products.rowCount !== productIds.length) throw new ApiError(422, 'cross_store_reference', 'An item refers to a product outside this store.')
+  if (operation.order.customer_id) {
+    const customer = await client.query('select 1 from public.pos_customers where store_id=$1 and id=$2', [operation.storeId, operation.order.customer_id])
+    if (!customer.rowCount) {
+      // Customer was rejected or not yet synced — accept the order without the customer link
+      // rather than blocking this paid sale from syncing permanently.
+      // The local Dexie record retains the customer reference for the cashier's view.
+      operation.order.customer_id = null
+    }
+  }
+  if (operation.order.employee_id) {
+    const employee = await client.query('select 1 from public.terminal_employees where store_id=$1 and id=$2', [operation.storeId, operation.order.employee_id])
+    if (!employee.rowCount) {
+      // Employee record was removed or never synced — accept the order without cashier
+      // attribution rather than blocking this paid sale from syncing permanently.
+      operation.order.employee_id = null
+    }
+  }
+  if (operation.order.manager_id) {
+    const manager = await client.query(
+      "select 1 from public.terminal_employees where store_id=$1 and id=$2 and role='manager' and active=true",
+      [operation.storeId, operation.order.manager_id])
+    if (!manager.rowCount) throw new ApiError(422, 'validation_failed', 'Manager approval references an employee who is not an active manager for this store.')
+  }
+  await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
+    subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id,employee_id,manager_id,manager_approved_at)
+    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [operation.operationId, operation.storeId, operation.order.receipt_number, store.rows[0].currency,
+      store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.discountCents, operation.totals.taxCents,
+      operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id,
+      operation.order.employee_id, operation.order.manager_id, operation.order.manager_approved_at])
+  for (const item of operation.items) {
+    await client.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
+      snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,discount_kind,discount_value,
+      subtotal_cents,discount_applied_cents,taxable_cents,tax_cents,total_cents)
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [item.id, operation.storeId, operation.operationId, item.product_id, item.snapshot_name, item.snapshot_sku,
+        item.snapshot_price_cents, item.snapshot_tax_bps, item.catalog_version, item.quantity, item.discount_kind, item.discount_value,
+        item.subtotal_cents, item.discount_applied_cents, item.taxable_cents, item.tax_cents, item.total_cents])
+  }
+  await client.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,reference,client_generated_at)
+    values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [operation.payment.id, operation.storeId, operation.operationId,
+      operation.payment.method, operation.payment.amount_cents, operation.payment.tendered_cents,
+      operation.payment.change_cents, operation.payment.reference, operation.order.client_generated_at])
+  let position = BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [operation.storeId])).rows[0].last_position)
+  for (const productId of productIds) {
+    const quantity = operation.items.filter(item => item.product_id === productId).reduce((sum, item) => sum + item.quantity, 0)
+    await client.query(`insert into public.pos_inventory_movements(store_id,product_id,order_id,operation_id,delta,reason)
+      values ($1,$2,$3,$4,$5,'sale')`, [operation.storeId, productId, operation.operationId, operation.operationId, -quantity])
+    const stock = await client.query(`update public.pos_stock set current_stock=current_stock-$3, updated_at=now()
+      where store_id=$1 and product_id=$2 and current_stock>=$3 returning current_stock`, [operation.storeId, productId, quantity])
+    if (!stock.rows[0]) {
+      const existing = await client.query('select current_stock from public.pos_stock where store_id=$1 and product_id=$2', [operation.storeId, productId])
+      if (!existing.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Stock projection is missing for a product.')
+      throw new ApiError(409, 'insufficient_stock', `Not enough stock for product ${productId} (have ${existing.rows[0].current_stock}, need ${quantity}).`)
+    }
+    position += 1n
+    await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
+      values ($1,$2,'stock',$3,$4)`, [operation.storeId, position.toString(), productId, { product_id: productId, current_stock: stock.rows[0].current_stock }])
+  }
+  position += 1n
+  await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
+    values ($1,$2,'order',$3,$4)`, [operation.storeId, position.toString(), operation.operationId, { receipt_number: operation.order.receipt_number }])
+  await client.query('update public.pos_sync_feed_state set last_position=$2 where store_id=$1', [operation.storeId, position.toString()])
+  return { acceptedCheckpoint: position.toString() }
+}
+
 async function push(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
     const operation = validateOperation(req.body)
@@ -151,77 +230,10 @@ async function push(req: import('express').Request, res: import('express').Respo
         res.json(replay.rows[0].result_json)
         return
       }
-      const store = await client.query('select name,timezone,currency from public.stores where id=$1', [operation.storeId])
-      if (!store.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Store no longer exists.')
-      const productIds = [...new Set(operation.items.map(item => item.product_id))]
-      const products = await client.query('select id from public.pos_products where store_id=$1 and id = any($2::uuid[])', [operation.storeId, productIds])
-      if (products.rowCount !== productIds.length) throw new ApiError(422, 'cross_store_reference', 'An item refers to a product outside this store.')
-      if (operation.order.customer_id) {
-        const customer = await client.query('select 1 from public.pos_customers where store_id=$1 and id=$2', [operation.storeId, operation.order.customer_id])
-        if (!customer.rowCount) {
-          // Customer was rejected or not yet synced — accept the order without the customer link
-          // rather than blocking this paid sale from syncing permanently.
-          // The local Dexie record retains the customer reference for the cashier's view.
-          operation.order.customer_id = null
-        }
-      }
-      if (operation.order.employee_id) {
-        const employee = await client.query('select 1 from public.terminal_employees where store_id=$1 and id=$2', [operation.storeId, operation.order.employee_id])
-        if (!employee.rowCount) {
-          // Employee record was removed or never synced — accept the order without cashier
-          // attribution rather than blocking this paid sale from syncing permanently.
-          operation.order.employee_id = null
-        }
-      }
-      if (operation.order.manager_id) {
-        const manager = await client.query(
-          "select 1 from public.terminal_employees where store_id=$1 and id=$2 and role='manager' and active=true",
-          [operation.storeId, operation.order.manager_id])
-        if (!manager.rowCount) throw new ApiError(422, 'validation_failed', 'Manager approval references an employee who is not an active manager for this store.')
-      }
-      await client.query(`insert into public.pos_orders(id,store_id,receipt_number,currency,store_name_snapshot,timezone_snapshot,
-        subtotal_cents,discount_cents,tax_cents,total_cents,catalog_version,client_generated_at,customer_id,employee_id,manager_id,manager_approved_at)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-        [operation.operationId, operation.storeId, operation.order.receipt_number, store.rows[0].currency,
-          store.rows[0].name, store.rows[0].timezone, operation.totals.subtotalCents, operation.totals.discountCents, operation.totals.taxCents,
-          operation.totals.totalCents, operation.order.catalog_version, operation.order.client_generated_at, operation.order.customer_id,
-          operation.order.employee_id, operation.order.manager_id, operation.order.manager_approved_at])
-      for (const item of operation.items) {
-        await client.query(`insert into public.pos_order_items(id,store_id,order_id,product_id,snapshot_name,snapshot_sku,
-          snapshot_price_cents,snapshot_tax_bps,catalog_version,quantity,discount_kind,discount_value,
-          subtotal_cents,discount_applied_cents,taxable_cents,tax_cents,total_cents)
-          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-          [item.id, operation.storeId, operation.operationId, item.product_id, item.snapshot_name, item.snapshot_sku,
-            item.snapshot_price_cents, item.snapshot_tax_bps, item.catalog_version, item.quantity, item.discount_kind, item.discount_value,
-            item.subtotal_cents, item.discount_applied_cents, item.taxable_cents, item.tax_cents, item.total_cents])
-      }
-      await client.query(`insert into public.pos_payments(id,store_id,order_id,method,amount_cents,tendered_cents,change_cents,reference,client_generated_at)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [operation.payment.id, operation.storeId, operation.operationId,
-          operation.payment.method, operation.payment.amount_cents, operation.payment.tendered_cents,
-          operation.payment.change_cents, operation.payment.reference, operation.order.client_generated_at])
-      let position = BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [operation.storeId])).rows[0].last_position)
-      for (const productId of productIds) {
-        const quantity = operation.items.filter(item => item.product_id === productId).reduce((sum, item) => sum + item.quantity, 0)
-        await client.query(`insert into public.pos_inventory_movements(store_id,product_id,order_id,operation_id,delta,reason)
-          values ($1,$2,$3,$4,$5,'sale')`, [operation.storeId, productId, operation.operationId, operation.operationId, -quantity])
-        const stock = await client.query(`update public.pos_stock set current_stock=current_stock-$3, updated_at=now()
-          where store_id=$1 and product_id=$2 and current_stock>=$3 returning current_stock`, [operation.storeId, productId, quantity])
-        if (!stock.rows[0]) {
-          const existing = await client.query('select current_stock from public.pos_stock where store_id=$1 and product_id=$2', [operation.storeId, productId])
-          if (!existing.rows[0]) throw new ApiError(422, 'cross_store_reference', 'Stock projection is missing for a product.')
-          throw new ApiError(409, 'insufficient_stock', `Not enough stock for product ${productId} (have ${existing.rows[0].current_stock}, need ${quantity}).`)
-        }
-        position += 1n
-        await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
-          values ($1,$2,'stock',$3,$4)`, [operation.storeId, position.toString(), productId, { product_id: productId, current_stock: stock.rows[0].current_stock }])
-      }
-      position += 1n
-      await client.query(`insert into public.pos_change_feed(store_id,position,entity_type,entity_id,payload)
-        values ($1,$2,'order',$3,$4)`, [operation.storeId, position.toString(), operation.operationId, { receipt_number: operation.order.receipt_number }])
-      await client.query('update public.pos_sync_feed_state set last_position=$2 where store_id=$1', [operation.storeId, position.toString()])
-      const result = { status: 'accepted', operation_id: operation.operationId, accepted_checkpoint: position.toString() }
+      const { acceptedCheckpoint } = await performOrderCreation(client, operation)
+      const result = { status: 'accepted', operation_id: operation.operationId, accepted_checkpoint: acceptedCheckpoint }
       await client.query(`insert into public.pos_operation_ledger(store_id,operation_id,payload_hash,status,result_json,accepted_checkpoint)
-        values ($1,$2,$3,'accepted',$4,$5)`, [operation.storeId, operation.operationId, hash, result, position.toString()])
+        values ($1,$2,$3,'accepted',$4,$5)`, [operation.storeId, operation.operationId, hash, result, acceptedCheckpoint])
       await client.query('commit')
       res.json(result)
     } catch (reason) { await client.query('rollback'); throw reason }
@@ -402,6 +414,91 @@ async function refund(req: import('express').Request, res: import('express').Res
   }
 }
 
+// ---------------------------------------------------------------------------
+// POST /orders/:id/exchange — owner/manager only. Returns specific item(s) from a past order and
+// rings up replacement item(s) in one atomic action, by composing performRefund() and
+// performOrderCreation() inside a single transaction/per-store lock — not two HTTP round-trips,
+// so a half-applied exchange (item taken back but no replacement rung up, or the reverse) can
+// never persist. Deliberately does zero new money math: the return is refunded at exactly its
+// original sold price/tax (performRefund, unmodified), the replacement is sold at exactly today's
+// catalog price with full server-side validation (performOrderCreation, unmodified — the same
+// path every ordinary sale goes through). The two are linked by pos_refunds.exchange_order_id,
+// purely for display/audit. What the customer nets owing or getting back is a derived,
+// display-only figure computed here (new_order total minus refund amount, may be negative) —
+// never written as a payment amount on either row; each row's own amount is independently correct
+// as if the two had happened separately.
+// ---------------------------------------------------------------------------
+async function exchange(req: import('express').Request, res: import('express').Response) {
+  try {
+    const orderId = id(req.params.id, 'Order ID')
+    const body = req.body as Record<string, unknown>
+    const storeId = id(body.store_id, 'Store ID')
+    const operationId = id(body.operation_id, 'Operation ID')
+    const reason = body.reason === null || body.reason === undefined || body.reason === ''
+      ? null : text(body.reason, 'Exchange reason', 240)
+    const returnItems = parseRefundItems(body.return_items)
+    if (!returnItems) throw new ApiError(422, 'validation_failed', 'return_items is required and must be a non-empty array.')
+    const newOrderOperation = validateOperation(body.new_order)
+    if (newOrderOperation.storeId !== storeId) throw new ApiError(422, 'cross_store_reference', 'The replacement order must be for the same store as the exchange.')
+    const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex')
+
+    const userId = await requireStoreManager(req, storeId)
+
+    const client = await db.connect()
+    try {
+      await client.query('begin')
+      await client.query('insert into public.pos_sync_feed_state(store_id) values ($1) on conflict do nothing', [storeId])
+      await client.query('select last_position from public.pos_sync_feed_state where store_id=$1 for update', [storeId])
+
+      const replay = await client.query('select payload_hash,result_json from public.pos_operation_ledger where store_id=$1 and operation_id=$2', [storeId, operationId])
+      if (replay.rows[0]) {
+        if (replay.rows[0].payload_hash !== hash) throw new ApiError(409, 'operation_id_conflict', 'This operation ID was used for a different exchange.')
+        await client.query('commit')
+        res.status(201).json(replay.rows[0].result_json)
+        return
+      }
+
+      const { acceptedCheckpoint } = await performOrderCreation(client, newOrderOperation)
+      // The replacement order's own operation_id is independently ledgered too (same shape a
+      // plain POST /push would have written), so a later retry of just that half — e.g. a stray
+      // client replaying only the new-sale part — replays cleanly instead of hitting a duplicate
+      // pos_orders primary key.
+      const newOrderHash = createHash('sha256').update(JSON.stringify(body.new_order)).digest('hex')
+      const newOrderResult = { status: 'accepted', operation_id: newOrderOperation.operationId, accepted_checkpoint: acceptedCheckpoint }
+      await client.query(
+        `insert into public.pos_operation_ledger(store_id,operation_id,payload_hash,status,result_json,accepted_checkpoint)
+         values ($1,$2,$3,'accepted',$4,$5)`,
+        [storeId, newOrderOperation.operationId, newOrderHash, newOrderResult, acceptedCheckpoint],
+      )
+
+      const refundResult = await performRefund(client, storeId, orderId, userId, reason, returnItems, newOrderOperation.operationId)
+      const netAmountCents = newOrderOperation.totals.totalCents - Number(refundResult.refund.amount_cents)
+
+      await audit(client, storeId, userId, 'order.exchange',
+        `Order ${orderId}: exchange -> new order ${newOrderOperation.operationId} (refund ${refundResult.refund.amount_cents} cents, new sale ${newOrderOperation.totals.totalCents} cents, net ${netAmountCents} cents)`)
+
+      const position = (await client.query('select last_position::text as last_position from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position
+      const result = { refund: refundResult.refund, refund_items: refundResult.items, new_order: newOrderResult, net_amount_cents: netAmountCents }
+      await client.query(
+        `insert into public.pos_operation_ledger(store_id,operation_id,payload_hash,status,result_json,accepted_checkpoint)
+         values ($1,$2,$3,'accepted',$4,$5)`,
+        [storeId, operationId, hash, result, position],
+      )
+
+      await client.query('commit')
+      res.status(201).json(result)
+    } catch (reason2) {
+      await client.query('rollback')
+      throw reason2
+    } finally {
+      client.release()
+    }
+  } catch (reason) {
+    sendApiError(res, reason)
+  }
+}
+
 ordersRouter.post('/push', (req, res) => void push(req, res))
 terminalOrdersRouter.post('/push', (req, res) => void push(req, res, true))
 ordersRouter.post('/:id/refund', (req, res) => void refund(req, res))
+ordersRouter.post('/:id/exchange', (req, res) => void exchange(req, res))
