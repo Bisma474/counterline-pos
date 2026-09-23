@@ -74,9 +74,9 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
     if (!response.ok) fail(401, 'authentication_required', 'Sign in again.')
     const user = await response.json() as { id?: string }
     if (!user.id) fail(401, 'authentication_required', 'Sign in again.')
-    const membership = await client.query('select user_id from public.store_memberships where store_id=$1 and user_id=$2 and active and role in (\'owner\',\'manager\') for share', [storeId, user.id])
+    const membership = await client.query<{ role: 'owner' | 'manager' }>('select role from public.store_memberships where store_id=$1 and user_id=$2 and active and role in (\'owner\',\'manager\') for share', [storeId, user.id])
     if (!membership.rowCount) fail(403, 'manager_required', 'An active owner or manager membership is required.')
-    return user.id
+    return { userId: user.id, role: membership.rows[0].role }
   }
   // actorId is always the caller's own server-verified user id from manager() above — never a
   // client-supplied value — so an audit row can never be spoofed to attribute an action to
@@ -119,7 +119,7 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
     const name = string(input.name, 'terminal name', /^.{1,80}$/u).trim()
     if (!name) fail(400, 'validation_failed', 'Enter a terminal name.')
     const result = await transaction(async client => {
-      const userId = await manager(req, client, storeId)
+      const { userId } = await manager(req, client, storeId)
       // Possession of a valid refresh credential identifies this browser's previous installation,
       // including when an administrator moves it to another managed store.
       const presented = cookie(req, names.refresh)
@@ -164,7 +164,18 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
     const pin = input.pin === undefined || input.pin === '' ? undefined : pinValue(input.pin)
     if (!updating && !pin) fail(400, 'validation_failed', 'Set a PIN for the new employee.')
     const employee = await transaction(async client => {
-      const userId = await manager(req, client, storeId)
+      const { userId, role: callerRole } = await manager(req, client, storeId)
+      // A manager may create/edit cashiers, but never touch a manager-role employee — only an
+      // owner can grant or hold manager-level access. Covers creating a manager, promoting a
+      // cashier to manager, and editing/demoting/deactivating an existing manager, all in one
+      // check: either the role being set, or (on an update) the role already on the row.
+      if (callerRole !== 'owner') {
+        if (role === 'manager') fail(403, 'owner_required', 'Only a store owner can create or edit a manager-role employee.')
+        if (updating) {
+          const current = await client.query<{ role: string }>('select role from public.terminal_employees where id=$1 and store_id=$2', [id, storeId])
+          if (current.rows[0]?.role === 'manager') fail(403, 'owner_required', 'Only a store owner can create or edit a manager-role employee.')
+        }
+      }
       const credential = pin ? await verifier(pin) : undefined
       const params = [id, storeId, name, role, input.active, credential?.salt, credential?.hash]
       const { rows } = updating
@@ -180,7 +191,7 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
   router.post('/terminal-auth/devices/:id/revoke', async (req, res) => {
     const storeId = uuid(body(req).store_id), id = uuid(req.params.id)
     await transaction(async client => {
-      const userId = await manager(req, client, storeId)
+      const { userId } = await manager(req, client, storeId)
       const existing = await client.query<{ name: string }>('select name from public.terminal_devices where id=$1 and store_id=$2', [id, storeId])
       const result = await client.query('update public.terminal_devices set revoked_at=coalesce(revoked_at,now()) where id=$1 and store_id=$2', [id, storeId])
       if (!result.rowCount) fail(404, 'device_not_found', 'Terminal not found in this store.')
@@ -192,7 +203,7 @@ export function terminalAuthRouter(options: TerminalAuthOptions) {
   router.post('/terminal-auth/devices/:id/reactivate', async (req, res) => {
     const storeId = uuid(body(req).store_id), id = uuid(req.params.id)
     await transaction(async client => {
-      const userId = await manager(req, client, storeId)
+      const { userId } = await manager(req, client, storeId)
       // Look the device up first: once the update below fails with a unique violation, the
       // transaction is aborted and no further query on this connection would succeed.
       const existing = await client.query<{ name: string; revoked_at: Date | null }>('select name,revoked_at from public.terminal_devices where id=$1 and store_id=$2', [id, storeId])
