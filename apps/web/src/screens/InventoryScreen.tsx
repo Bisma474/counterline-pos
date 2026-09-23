@@ -1233,7 +1233,7 @@ function AllMovementsDrawer({ storeId, terminal, onClose }: { storeId: string; t
 
   return (
     <div className="pc-overlay" role="dialog" aria-modal="true" aria-label="All inventory movements" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="pc-drawer" style={{ width: 'min(760px, 100vw)' }}>
+      <div className="pc-drawer" style={{ width: 'min(1180px, 100vw)' }}>
         <div className="pc-drawer-head">
           <div className="pc-drawer-head-copy">
             <p className="pc-drawer-eyebrow">Inventory</p>
@@ -1263,13 +1263,14 @@ function MovementsTable({ movements, loading, showProduct }: { movements: Moveme
   if (loading && movements === null) return <p className="inv-mv-empty">Loading movement history…</p>
   if (!movements || movements.length === 0) return <p className="inv-mv-empty">No stock movements recorded yet.</p>
   return (
-    <div className="pc-table-wrap">
+    <div className="pc-table-wrap inv-mv-table">
       <div className={`inv-mv-thead ${showProduct ? 'with-product' : ''}`} role="row">
         {showProduct && <span>Product</span>}
         <span>Reason</span>
         <span>Delta</span>
         <span>Old → New</span>
         <span>Note</span>
+        <span>Changed by</span>
         <span>When</span>
       </div>
       {movements.map((m) => {
@@ -1280,7 +1281,8 @@ function MovementsTable({ movements, loading, showProduct }: { movements: Moveme
             <span><span className="inv-mv-reason">{movementLabel(m)}</span></span>
             <span className={`inv-mv-delta ${deltaCls}`}>{m.delta > 0 ? `+${m.delta}` : m.delta}</span>
             <span>{m.old_quantity !== null && m.new_quantity !== null ? `${m.old_quantity} → ${m.new_quantity}` : '—'}</span>
-            <span className="inv-mv-note" title={m.note ?? ''}>{m.note ?? '—'}{m.actor_name ? ` · ${m.actor_name}` : ''}</span>
+            <span className="inv-mv-note" title={m.note ?? ''}>{m.note ?? '—'}</span>
+            <span className="inv-mv-actor" title={m.actor_name ?? 'System'}>{m.actor_name ?? 'System'}</span>
             <span className="inv-mv-when">{formatWhen(m.server_received_at)}</span>
           </div>
         )

@@ -264,14 +264,17 @@
 .inv-result-value.decrease { color: #8b2a1a; }
 
 /* ─── Movements ledger table ─────────────────────────────────────── */
+.inv-mv-table { overflow-x: auto; }
 .inv-mv-thead, .inv-mv-row {
   display: grid;
-  grid-template-columns: .7fr .6fr 1.3fr 1.6fr 1fr;
+  grid-template-columns: .7fr .6fr 1.1fr 1.35fr 1.15fr 1fr;
   gap: 10px;
   align-items: center;
+  min-width: 760px;
 }
 .inv-mv-thead.with-product, .inv-mv-row.with-product {
-  grid-template-columns: 1.1fr .7fr .6fr 1.3fr 1.6fr 1fr;
+  grid-template-columns: 1.1fr .7fr .6fr 1.1fr 1.35fr 1.15fr 1fr;
+  min-width: 1040px;
 }
 .inv-mv-thead {
   padding: 9px 16px;
@@ -303,7 +306,8 @@
   color: #594f44;
   white-space: nowrap;
 }
-.inv-mv-note { color: #756f63; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-mv-note { color: #756f63; font-size: 11px; overflow-wrap: anywhere; white-space: normal; }
+.inv-mv-actor { color: #3f5148; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
 .inv-mv-when { font: 500 10px 'DM Mono', monospace; color: #b4ab9a; text-align: right; }
 .inv-mv-empty { padding: 40px 16px; text-align: center; color: #9e8f75; font-size: 12.5px; }
 .inv-mv-product { color: #13261e; font-weight: 600; }

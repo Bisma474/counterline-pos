@@ -163,11 +163,14 @@ async function listMovements(req: Request, res: Response, terminal = false) {
     // whichever one this row actually has.
     const result = await db.query<MovementRow>(
       `select m.id, m.product_id, p.name as product_name, m.delta, m.reason, m.adjustment_reason, m.note,
-              m.old_quantity, m.new_quantity, coalesce(pr.full_name, te_actor.name, te_order.name) as actor_name, m.cycle_count_id,
+              m.old_quantity, m.new_quantity,
+              coalesce(nullif(trim(pr.full_name), ''), au.email, te_actor.name, te_order.name) as actor_name,
+              m.cycle_count_id,
               m.server_received_at
        from public.pos_inventory_movements m
        left join public.pos_products p on p.store_id = m.store_id and p.id = m.product_id
        left join public.profiles pr on pr.id = m.actor_id
+       left join auth.users au on au.id = m.actor_id
        left join public.terminal_employees te_actor on te_actor.store_id = m.store_id and te_actor.id = m.actor_employee_id
        left join public.pos_orders o on o.store_id = m.store_id and o.id = m.order_id and m.reason = 'sale'
        left join public.terminal_employees te_order on te_order.store_id = m.store_id and te_order.id = o.employee_id
