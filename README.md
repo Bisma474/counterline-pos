@@ -270,15 +270,6 @@ Some browser runners build the web app with fixture configuration. Run the norma
 - Operation IDs and database constraints protect retries from duplicate business effects.
 - Never commit `.env`, passwords, database URLs, Supabase secret/service keys, terminal cookies, or real PINs.
 
-## Known boundaries before production
-
-- Card payments and refunds are manually confirmed external actions. There is no integrated card-terminal or bank-refund API.
-- Unsynchronized sales can be lost if browser storage is cleared or the device is destroyed. A production deployment needs an approved recovery/backup procedure.
-- Browser printing and keyboard-style barcode scanning need verification with the exact operating system, printer driver, paper size, scanner, and browser used in the store.
-- Offline support depends on a production PWA build served over HTTPS (localhost is allowed for development). Vite's development server is not proof of offline service-worker behavior.
-- The project has committed SQL migrations, but it does not yet have a fully automated deployment migration ledger. Verify the target database before each deployment.
-- Load, concurrency, backup restoration, monitoring, and long-running real-store operation still require deployment-specific acceptance testing.
-- Integrated EMV, automatic bank refunds, wallets, loyalty points, store credit, and generic negative-sale returns are intentionally unsupported.
 
 ## Further documentation
 
