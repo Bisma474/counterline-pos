@@ -1267,11 +1267,11 @@ function MovementsTable({ movements, loading, showProduct }: { movements: Moveme
       <div className={`inv-mv-thead ${showProduct ? 'with-product' : ''}`} role="row">
         {showProduct && <span>Product</span>}
         <span>Reason</span>
-        <span>Delta</span>
+        <span className="inv-mv-delta-head">Delta</span>
         <span>Old → New</span>
         <span>Note</span>
         <span>Changed by</span>
-        <span>When</span>
+        <span className="inv-mv-when-head">When</span>
       </div>
       {movements.map((m) => {
         const deltaCls = m.delta > 0 ? 'positive' : m.delta < 0 ? 'negative' : ''

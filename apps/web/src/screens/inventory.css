@@ -302,6 +302,7 @@
 }
 .inv-mv-row:last-child { border-bottom: none; }
 .inv-mv-delta { font: 700 12px 'DM Mono', monospace; }
+.inv-mv-delta, .inv-mv-delta-head { padding-left: 6px; }
 .inv-mv-delta.positive { color: #2d6e46; }
 .inv-mv-delta.negative { color: #8b2a1a; }
 .inv-mv-reason {
@@ -315,6 +316,7 @@
 }
 .inv-mv-note { color: #756f63; font-size: 11px; overflow-wrap: anywhere; white-space: normal; }
 .inv-mv-actor { color: #3f5148; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
+.inv-mv-when-head { text-align: right; }
 .inv-mv-when { font: 500 10px 'DM Mono', monospace; color: #b4ab9a; text-align: right; }
 .inv-mv-empty { padding: 40px 16px; text-align: center; color: #9e8f75; font-size: 12.5px; }
 .inv-mv-product { color: #13261e; font-weight: 600; }
