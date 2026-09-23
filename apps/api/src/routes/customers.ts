@@ -54,20 +54,41 @@ function cursor(value: unknown): { id: string } | null {
   const row = object(parsed)
   return { id: validUuid(row.id, 'Cursor ID') }
 }
+// LIKE/ILIKE treat %, _ and \ as special — a name containing one shouldn't act as a wildcard.
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`)
+}
+function nameQuery(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.length > 60) throw new ApiError(422, 'validation_failed', 'Search text must be 60 characters or fewer.')
+  return trimmed
+}
+
 async function search(req: Request, res: Response, terminal = false) {
   try {
     const storeId = terminal ? (await requireCashierTerminal(req, db)).storeId : validUuid(req.query.store_id, 'Store ID')
     if (!terminal) await ownerStore(req, storeId)
     if (terminal && req.query.store_id !== undefined && req.query.store_id !== storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
-    const term = phone(req.query.phone)
-    if (!term) throw new ApiError(400, 'search_required', 'Enter a phone number with its country code to search.')
+    // Two independent ways to find a customer: an exact phone prefix, or a name substring.
+    // Neither given at all means "browse the store's customer list" — a customer created without
+    // a phone number (phone is optional) would otherwise be permanently unfindable, since a phone
+    // search can never match a null phone_normalized.
+    const phoneTerm = req.query.phone !== undefined ? phone(req.query.phone) : null
+    const nameTerm = phoneTerm ? null : nameQuery(req.query.q)
     const rawLimit = req.query.limit === undefined ? 20 : Number(req.query.limit)
     if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) throw new ApiError(400, 'validation_failed', 'Limit must be 1 to 50.')
     const after = cursor(req.query.cursor)
-    const result = await db.query<{ id: string; name: string; phone_normalized: string | null }>(`
-      select id,name,phone_normalized from public.pos_customers
-      where store_id=$1 and phone_normalized like $2 and ($3::uuid is null or id > $3::uuid)
-      order by id limit $4`, [storeId, `${term}%`, after?.id ?? null, rawLimit + 1])
+    const result = phoneTerm
+      ? await db.query<{ id: string; name: string; phone_normalized: string | null }>(`
+          select id,name,phone_normalized from public.pos_customers
+          where store_id=$1 and phone_normalized like $2 and ($3::uuid is null or id > $3::uuid)
+          order by id limit $4`, [storeId, `${phoneTerm}%`, after?.id ?? null, rawLimit + 1])
+      : await db.query<{ id: string; name: string; phone_normalized: string | null }>(`
+          select id,name,phone_normalized from public.pos_customers
+          where store_id=$1 and ($2::text is null or name ilike $2 escape '\\') and ($3::uuid is null or id > $3::uuid)
+          order by id limit $4`, [storeId, nameTerm ? `%${escapeLike(nameTerm)}%` : null, after?.id ?? null, rawLimit + 1])
     const page = result.rows.slice(0, rawLimit)
     const last = page.at(-1)
     res.json({ customers: page.map(({ id, name: customerName, phone_normalized }) => ({ id, store_id: storeId, name: customerName, phone_normalized })),

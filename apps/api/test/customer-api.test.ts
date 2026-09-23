@@ -61,7 +61,17 @@ test('device customer API enforces search scope and returns durable replay resul
     assert.equal(crossStore.status, 403)
     const second = await post({ ...payload, operation_id: randomUUID(), customer: { ...payload.customer, id: randomUUID(), name: 'Second customer' } })
     assert.equal(second.status, 200)
-    assert.equal((await fetch('http://127.0.0.1:3182/pos/customers', { headers })).status, 400)
+    // No phone and no name query at all now browses the whole store customer list — a customer
+    // saved without a phone (phone is optional) would otherwise never be findable again, since a
+    // phone search can never match a null phone_normalized.
+    const browseAll = await fetch('http://127.0.0.1:3182/pos/customers', { headers })
+    assert.equal(browseAll.status, 200)
+    assert.equal((await browseAll.json() as { customers: unknown[] }).customers.length, 2)
+    const byName = await fetch('http://127.0.0.1:3182/pos/customers?q=second', { headers })
+    assert.equal(byName.status, 200)
+    const byNameBody = await byName.json() as { customers: Array<{ name: string }> }
+    assert.equal(byNameBody.customers.length, 1)
+    assert.equal(byNameBody.customers[0].name, 'Second customer')
     const search = await fetch('http://127.0.0.1:3182/pos/customers?phone=%2B923001234567&limit=1', { headers })
     assert.equal(search.status, 200)
     const firstPage = await search.json() as { customers: unknown[]; next_cursor: string | null }

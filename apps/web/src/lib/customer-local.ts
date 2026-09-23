@@ -20,9 +20,18 @@ export async function createLocalCustomer(storeId: string, rawName: string, rawP
   return customer
 }
 
-export async function searchLocalCustomers(storeId: string, rawPhone: string): Promise<LocalCustomer[]> {
-  const phone = normalizedPhone(rawPhone)
-  if (!phone) return []
-  return (await posDb.customers.where('store_id').equals(storeId).toArray())
-    .filter(customer => customer.phone_normalized?.startsWith(phone)).sort((a, b) => a.name.localeCompare(b.name))
+// A query starting with '+' is a phone lookup (unambiguous, and normalizedPhone requires it);
+// anything else — including an empty query, which lists every local customer — matches by name.
+// A customer saved without a phone (it's optional) would otherwise never be findable again, since
+// no phone search can ever match a null phone_normalized.
+export async function searchLocalCustomers(storeId: string, rawQuery: string): Promise<LocalCustomer[]> {
+  const all = await posDb.customers.where('store_id').equals(storeId).toArray()
+  const trimmed = rawQuery.trim()
+  if (trimmed.startsWith('+')) {
+    const phone = normalizedPhone(rawQuery)
+    if (!phone) return []
+    return all.filter(customer => customer.phone_normalized?.startsWith(phone)).sort((a, b) => a.name.localeCompare(b.name))
+  }
+  const needle = trimmed.toLowerCase()
+  return all.filter(customer => !needle || customer.name.toLowerCase().includes(needle)).sort((a, b) => a.name.localeCompare(b.name))
 }

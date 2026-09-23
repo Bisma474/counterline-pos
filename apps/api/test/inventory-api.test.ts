@@ -74,7 +74,8 @@ test('Phase 2 inventory operations: RBAC, transactional ledger, isolation, negat
     // auth, not the separate PIN-based terminal cashier flow). ──────────────────────────────
     const owner = randomUUID(), manager = randomUUID(), cashier = randomUUID(), store = randomUUID()
     const productA = randomUUID(), productB = randomUUID()
-    await database.query('insert into auth.users(id) values ($1),($2),($3)', [owner, manager, cashier])
+    await database.query('insert into auth.users(id,raw_user_meta_data) values ($1,$4),($2,null),($3,null)',
+      [owner, manager, cashier, JSON.stringify({ full_name: 'Fixture Owner' })])
     await database.query("insert into public.stores(id,name,code,created_by) values ($1,'Fixture Store','inv-fixture',$2)", [store, owner])
     await database.query("insert into public.store_memberships(store_id,user_id,role) values ($1,$2,'owner'),($1,$3,'manager'),($1,$4,'cashier')", [store, owner, manager, cashier])
     await database.query(`insert into public.pos_products(id,store_id,sku,name,unit_price_cents) values ($1,$2,'SKU-A','Product A',1000),($3,$2,'SKU-B','Product B',2000)`, [productA, store, productB])
@@ -599,6 +600,21 @@ test('Phase 2 inventory operations: RBAC, transactional ledger, isolation, negat
       assert.equal(await stockOf(checkoutProduct), 10, 'refund must still restore stock exactly as before Phase 2')
       const refundMovement = (await movementsOf(checkoutProduct)).find(m => m.reason === 'refund')!
       assert.equal(refundMovement.delta, 3)
+      // A refund now records who approved it (the requesting owner/manager), same as manual
+      // adjustments and cycle counts already did — direct-SQL row still carries the raw actor_id.
+      assert.equal(refundMovement.actor_id, owner)
+
+      // The movements panel (GET /inventory/movements) is what the UI actually renders, and it
+      // resolves actor_name two different ways depending on the row's reason: refunds/adjustments
+      // read straight off actor_id -> profiles, while a sale (no actor_id at all) resolves via the
+      // order it belongs to -> pos_orders.employee_id -> terminal_employees. This checkout went
+      // through plain owner-token /orders/push, not a cashier terminal, so it has no employee_id
+      // and correctly shows no actor for its sale row — only the refund row is attributed.
+      const movementsResp = await call(`/inventory/movements?store_id=${store}&product_id=${checkoutProduct}&limit=50`, ownerToken)
+      assert.equal(movementsResp.status, 200)
+      const panelRows = (await movementsResp.json() as { items: Array<{ reason: string; actor_name: string | null }> }).items
+      assert.equal(panelRows.find(row => row.reason === 'refund')?.actor_name, 'Fixture Owner')
+      assert.equal(panelRows.find(row => row.reason === 'sale')?.actor_name, null)
     }
   } finally {
     server?.closeAllConnections(); server?.close()

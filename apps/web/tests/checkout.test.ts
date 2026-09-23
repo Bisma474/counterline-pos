@@ -210,3 +210,19 @@ test('duplicate normalized phones stay separate and checkout rejects cross-store
   assert.equal(await posDb.orders.count(), 0)
   await posDb.delete()
 })
+
+test('a customer saved without a phone number is still findable by name or by browsing all', async () => {
+  await posDb.delete(); await posDb.open()
+  const withPhone = await createLocalCustomer(storeId, 'Has Phone', '+923001234567')
+  const noPhone = await createLocalCustomer(storeId, 'No Phone Customer', '')
+  assert.equal(noPhone.phone_normalized, null)
+  // A phone search can never match a null phone_normalized — the phoneless customer must still
+  // be reachable some other way, or it's permanently lost from the UI's perspective.
+  assert.equal((await searchLocalCustomers(storeId, '+923001234567')).some(c => c.id === noPhone.id), false)
+  assert.deepEqual((await searchLocalCustomers(storeId, 'no phone')).map(c => c.id), [noPhone.id])
+  const browseAll = await searchLocalCustomers(storeId, '')
+  assert.equal(browseAll.length, 2)
+  assert.ok(browseAll.some(c => c.id === withPhone.id))
+  assert.ok(browseAll.some(c => c.id === noPhone.id))
+  await posDb.delete()
+})
