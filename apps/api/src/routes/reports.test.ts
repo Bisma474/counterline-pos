@@ -55,6 +55,7 @@ const chain = [
   '202609180001_terminal_name_uniqueness.sql',
   '202609180002_pos_orders_report_read_access.sql',
   '202609180005_refunds.sql',
+  '202609190001_audit_log.sql',
   '202609230001_partial_refunds.sql', '202609240001_terminal_manager_refund_approval.sql',
 ]
 
