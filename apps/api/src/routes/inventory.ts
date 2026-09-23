@@ -122,13 +122,19 @@ async function listMovements(req: Request, res: Response) {
     const productId = req.query.product_id !== undefined ? uuid(req.query.product_id, 'product_id') : null
     const rawLimit = Number(req.query.limit ?? 50)
     const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 200 ? rawLimit : 50
+    // actor_name: a web-session actor (manual adjustment/cycle count, or a terminal exchange's
+    // web-manager refund) resolves via actor_id -> profiles; a PIN-approved terminal refund has no
+    // auth.users row at all, so it resolves via the new actor_employee_id -> terminal_employees
+    // instead (see 202609240001_terminal_manager_refund_approval.sql) — coalesce picks whichever
+    // one this row actually set.
     const result = await db.query<MovementRow>(
       `select m.id, m.product_id, p.name as product_name, m.delta, m.reason, m.adjustment_reason, m.note,
-              m.old_quantity, m.new_quantity, pr.full_name as actor_name, m.cycle_count_id,
+              m.old_quantity, m.new_quantity, coalesce(pr.full_name, te.name) as actor_name, m.cycle_count_id,
               m.server_received_at
        from public.pos_inventory_movements m
        left join public.pos_products p on p.store_id = m.store_id and p.id = m.product_id
        left join public.profiles pr on pr.id = m.actor_id
+       left join public.terminal_employees te on te.store_id = m.store_id and te.id = m.actor_employee_id
        where m.store_id = $1 and ($2::uuid is null or m.product_id = $2)
        order by m.server_received_at desc, m.id desc
        limit $3`,

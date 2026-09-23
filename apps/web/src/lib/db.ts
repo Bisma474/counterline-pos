@@ -167,7 +167,7 @@ export interface LocalRefund {
   order_id: string
   amount_cents: number       // integer cents; sum of this refund's line items, not the order total
   reason: string | null
-  refunded_by: string
+  refunded_by: string | null // null when approved by a PIN-based terminal manager instead of a web session
   exchange_order_id?: string | null
   created_at: string         // ISO 8601
 }

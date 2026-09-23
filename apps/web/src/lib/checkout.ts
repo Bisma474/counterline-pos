@@ -83,7 +83,13 @@ export interface ExchangeReturnItem { orderItemId: string; quantity: number }
  * orders/order_items/payments/refunds/refund_items tables — no outbox entry, since there's nothing
  * left to sync once the request has already succeeded.
  */
-export async function completeLocalExchange(
+/**
+ * Shared by the web (`completeLocalExchange`) and terminal (`completeLocalTerminalExchange`)
+ * entry points below — everything about an exchange is identical between the two except how the
+ * request actually gets sent (a web bearer token vs the terminal's cookie session plus a manager
+ * approver id), which the caller supplies as `submit`.
+ */
+async function runExchange(
   originalOrderId: string,
   returnItems: ExchangeReturnItem[],
   replacementItems: CartItem[],
@@ -91,6 +97,7 @@ export async function completeLocalExchange(
   method: 'cash' | 'card',
   tenderedCents: number,
   reference: string | null,
+  submit: (body: Record<string, unknown>) => Promise<Response>,
 ) {
   if (!returnItems.length) throw new Error('Select at least one item to return.')
   if (!replacementItems.length) throw new Error('Add at least one replacement product.')
@@ -130,24 +137,14 @@ export async function completeLocalExchange(
       change_cents: method === 'cash' ? tenderedCents - totals.totalCents : 0, reference },
   }
 
-  // Lazy import: keeps this module free of a top-level dependency on lib/supabase.ts (which reads
-  // import.meta.env at module load time — fine under Vite, but crashes any Node-run test that
-  // merely imports this file without a Vite runtime, even one that never calls this function).
-  const { accessToken, configuredApiUrl } = await import('./catalog')
-  const token = await accessToken()
-  const response = await fetch(`${configuredApiUrl()}/orders/${originalOrderId}/exchange`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      store_id: storeId, operation_id: exchangeOperationId,
-      return_items: returnItems.map(item => ({ order_item_id: item.orderItemId, quantity: item.quantity })),
-      new_order: newOrderPayload,
-    }),
+  const response = await submit({
+    store_id: storeId, operation_id: exchangeOperationId,
+    return_items: returnItems.map(item => ({ order_item_id: item.orderItemId, quantity: item.quantity })),
+    new_order: newOrderPayload,
   })
   const data = await response.json() as {
     code?: string; message?: string
-    refund?: { id: string; amount_cents: string; reason: string | null; refunded_by: string; created_at: string }
+    refund?: { id: string; amount_cents: string; reason: string | null; refunded_by: string | null; created_at: string }
     refund_items?: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }>
     new_order?: { accepted_checkpoint: string }
     net_amount_cents?: number
@@ -183,4 +180,55 @@ export async function completeLocalExchange(
   })
 
   return { newOrderId: newOrderOperationId, receiptNumber, netAmountCents: data.net_amount_cents, refundAmountCents: Number(refund.amount_cents) }
+}
+
+export async function completeLocalExchange(
+  originalOrderId: string,
+  returnItems: ExchangeReturnItem[],
+  replacementItems: CartItem[],
+  storeId: string,
+  method: 'cash' | 'card',
+  tenderedCents: number,
+  reference: string | null,
+) {
+  // Lazy import: keeps this module free of a top-level dependency on lib/supabase.ts (which reads
+  // import.meta.env at module load time — fine under Vite, but crashes any Node-run test that
+  // merely imports this file without a Vite runtime, even one that never calls this function).
+  const { accessToken, configuredApiUrl } = await import('./catalog')
+  return runExchange(originalOrderId, returnItems, replacementItems, storeId, method, tenderedCents, reference, async body => {
+    const token = await accessToken()
+    return fetch(`${configuredApiUrl()}/orders/${originalOrderId}/exchange`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    })
+  })
+}
+
+/**
+ * Terminal counterpart to completeLocalExchange — same money math and same online-only design
+ * (see the module-level comment on runExchange), but authenticated via the terminal's cookie
+ * session instead of a web bearer token, and carrying `approverEmployeeId`: the PIN-based
+ * terminal manager who approved this exchange (see ManagerApprovalModal), server-verified against
+ * terminal_employees rather than auth.users.
+ */
+export async function completeLocalTerminalExchange(
+  originalOrderId: string,
+  returnItems: ExchangeReturnItem[],
+  replacementItems: CartItem[],
+  storeId: string,
+  method: 'cash' | 'card',
+  tenderedCents: number,
+  reference: string | null,
+  approverEmployeeId: string,
+) {
+  const { configuredApiUrl } = await import('./catalog')
+  return runExchange(originalOrderId, returnItems, replacementItems, storeId, method, tenderedCents, reference, body =>
+    fetch(`${configuredApiUrl()}/pos/orders/${originalOrderId}/exchange`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, approver_employee_id: approverEmployeeId }),
+    }))
 }

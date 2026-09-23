@@ -34,7 +34,7 @@ const MIGRATIONS = [
   '202609200001_service_role_only_rls_policies.sql',
   '202609220001_inventory_operations.sql',
   '202609220002_product_variants.sql',
-  '202609230001_partial_refunds.sql',
+  '202609230001_partial_refunds.sql', '202609240001_terminal_manager_refund_approval.sql',
 ]
 
 test('Exchange: RBAC, net-owed and net-refund directions, atomicity, the exchange_order_id link, and idempotent replay', async () => {
