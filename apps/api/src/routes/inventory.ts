@@ -164,7 +164,7 @@ async function listMovements(req: Request, res: Response, terminal = false) {
     const result = await db.query<MovementRow>(
       `select m.id, m.product_id, p.name as product_name, m.delta, m.reason, m.adjustment_reason, m.note,
               m.old_quantity, m.new_quantity,
-              coalesce(nullif(trim(pr.full_name), ''), au.email, te_actor.name, te_order.name) as actor_name,
+              coalesce(nullif(trim(pr.full_name), ''), nullif(to_jsonb(au)->>'email', ''), te_actor.name, te_order.name) as actor_name,
               m.cycle_count_id,
               m.server_received_at
        from public.pos_inventory_movements m
