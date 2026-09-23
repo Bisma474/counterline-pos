@@ -264,19 +264,26 @@
 .inv-result-value.decrease { color: #8b2a1a; }
 
 /* ─── Movements ledger table ─────────────────────────────────────── */
-.inv-mv-table { overflow-x: auto; }
+.inv-mv-table {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
 .inv-mv-thead, .inv-mv-row {
   display: grid;
-  grid-template-columns: .7fr .6fr 1.1fr 1.35fr 1.15fr 1fr;
+  grid-template-columns: 110px 80px 135px minmax(260px, 2fr) minmax(190px, 1.35fr) 145px;
   gap: 10px;
   align-items: center;
-  min-width: 760px;
+  width: max(100%, 980px);
 }
 .inv-mv-thead.with-product, .inv-mv-row.with-product {
-  grid-template-columns: 1.1fr .7fr .6fr 1.1fr 1.35fr 1.15fr 1fr;
-  min-width: 1040px;
+  grid-template-columns: minmax(180px, 1.1fr) 110px 80px 135px minmax(300px, 2fr) minmax(210px, 1.35fr) 145px;
+  width: max(100%, 1280px);
 }
 .inv-mv-thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   padding: 9px 16px;
   background: #f3ede0;
   border-bottom: 1px solid #d9d0c0;
