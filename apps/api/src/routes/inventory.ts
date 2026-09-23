@@ -3,9 +3,11 @@ import { Router, type Request, type Response } from 'express'
 import type { PoolClient } from 'pg'
 import { db } from '../db.js'
 import { ApiError, requireStoreManager, sendApiError } from './auth.js'
+import { requireCashierTerminal } from '../terminal-auth/routes.js'
 import { inventoryStatus, lockStockableForUpdate, productStockable, type InventoryStatus } from '../lib/stockable.js'
 
 export const inventoryRouter = Router()
+export const terminalInventoryRouter = Router()
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const ADJUSTMENT_REASONS = ['damaged', 'expired', 'lost', 'received', 'correction', 'other'] as const
@@ -23,11 +25,41 @@ function storeIdBody(body: Record<string, unknown>): string {
   return uuid(body.store_id, 'store_id')
 }
 
+/** Who is signed in and (for a write) authorized: either a web-session owner/manager
+ * (auth.users) or a PIN-based terminal manager (terminal_employees) — same split as orders.ts's
+ * refund/exchange terminal support. Exactly one side is set. */
+type Actor = { userId: string; employeeId: null } | { userId: null; employeeId: string }
+
 /** Same action.verb / short descriptive target convention as terminal-auth's audit() helper —
  * duplicated per-file rather than shared, matching this codebase's existing convention
  * (see apps/api/src/routes/audit.ts's own comment on the same choice). */
-async function audit(client: PoolClient, storeId: string, actorId: string, action: string, target: string): Promise<void> {
-  await client.query('insert into public.audit_log(store_id, actor_id, action, target) values ($1,$2,$3,$4)', [storeId, actorId, action, target])
+async function audit(client: PoolClient, storeId: string, actor: Actor, action: string, target: string): Promise<void> {
+  await client.query('insert into public.audit_log(store_id, actor_id, actor_employee_id, action, target) values ($1,$2,$3,$4,$5)',
+    [storeId, actor.userId, actor.employeeId, action, target])
+}
+
+/** Verifies a client-claimed approver id is an active, manager-role terminal employee for this
+ * store — mirrors orders.ts's requireTerminalApprover exactly (duplicated per-file, same
+ * convention as audit() above). The PIN itself is verified client-side only, against the cached
+ * credential already synced to the terminal; this just confirms the claimed identity is really an
+ * active manager here. */
+async function requireTerminalApprover(client: PoolClient, storeId: string, employeeId: string): Promise<void> {
+  const result = await client.query(
+    "select 1 from public.terminal_employees where id=$1 and store_id=$2 and role='manager' and active=true",
+    [employeeId, storeId],
+  )
+  if (!result.rowCount) throw new ApiError(422, 'validation_failed', 'Approval references an employee who is not an active manager for this store.')
+}
+
+/** Read-only endpoints (list/movements): a web session needs owner/manager, a terminal session
+ * just needs to be an active cashier — viewing stock isn't privileged, only writing to it is. */
+async function requireReadAccess(req: Request, storeId: string, terminal: boolean): Promise<void> {
+  if (terminal) {
+    const session = await requireCashierTerminal(req, db)
+    if (session.storeId !== storeId) throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    return
+  }
+  await requireStoreManager(req, storeId)
 }
 
 /** audit_log.target is capped at 200 characters; pos_products allows a 160-char name plus an
@@ -77,10 +109,10 @@ export interface InventoryRow {
   status: InventoryStatus
 }
 
-async function listInventory(req: Request, res: Response) {
+async function listInventory(req: Request, res: Response, terminal = false) {
   try {
     const storeId = storeIdParam(req)
-    await requireStoreManager(req, storeId)
+    await requireReadAccess(req, storeId, terminal)
     const result = await db.query<Omit<InventoryRow, 'status'>>(
       `select p.id as product_id, p.name, p.sku, p.barcode, p.category_id, c.name as category_name,
               p.unit_price_cents::text as unit_price_cents, p.low_stock_threshold,
@@ -115,28 +147,30 @@ export interface MovementRow {
   server_received_at: string
 }
 
-async function listMovements(req: Request, res: Response) {
+async function listMovements(req: Request, res: Response, terminal = false) {
   try {
     const storeId = storeIdParam(req)
-    await requireStoreManager(req, storeId)
+    await requireReadAccess(req, storeId, terminal)
     const productId = req.query.product_id !== undefined ? uuid(req.query.product_id, 'product_id') : null
     const rawLimit = Number(req.query.limit ?? 50)
     const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 200 ? rawLimit : 50
-    // actor_name resolves two different ways depending on who the "actor" even is: manual
-    // adjustments/cycle counts and refunds set m.actor_id directly (an owner/manager, in
-    // auth.users/profiles); a sale has no actor_id at all — its actor is the cashier who rang it
-    // up, found via the order it belongs to (pos_orders.employee_id -> terminal_employees, a
-    // different identity system entirely, never in auth.users). coalesce() picks whichever path
-    // actually applies to this row's reason.
+    // actor_name: a web-session actor (manual adjustment/cycle count, or a terminal exchange's
+    // web-manager refund) resolves via actor_id -> profiles; a PIN-approved terminal adjustment or
+    // refund has no auth.users row at all, so it resolves via actor_employee_id ->
+    // terminal_employees instead (see 202609240001_terminal_manager_refund_approval.sql). A sale
+    // movement never sets either column (it's system-generated at checkout), so it resolves the
+    // cashier who rang it up via order_id -> pos_orders.employee_id instead. coalesce picks
+    // whichever one this row actually has.
     const result = await db.query<MovementRow>(
       `select m.id, m.product_id, p.name as product_name, m.delta, m.reason, m.adjustment_reason, m.note,
-              m.old_quantity, m.new_quantity, coalesce(pr.full_name, te.name) as actor_name, m.cycle_count_id,
+              m.old_quantity, m.new_quantity, coalesce(pr.full_name, te_actor.name, te_order.name) as actor_name, m.cycle_count_id,
               m.server_received_at
        from public.pos_inventory_movements m
        left join public.pos_products p on p.store_id = m.store_id and p.id = m.product_id
        left join public.profiles pr on pr.id = m.actor_id
+       left join public.terminal_employees te_actor on te_actor.store_id = m.store_id and te_actor.id = m.actor_employee_id
        left join public.pos_orders o on o.store_id = m.store_id and o.id = m.order_id and m.reason = 'sale'
-       left join public.terminal_employees te on te.store_id = m.store_id and te.id = o.employee_id
+       left join public.terminal_employees te_order on te_order.store_id = m.store_id and te_order.id = o.employee_id
        where m.store_id = $1 and ($2::uuid is null or m.product_id = $2)
        order by m.server_received_at desc, m.id desc
        limit $3`,
@@ -152,17 +186,23 @@ async function listMovements(req: Request, res: Response) {
 // revision/change-feed path as other catalog updates so another terminal can learn the
 // new threshold without relying on an eventual full snapshot refresh.
 // ---------------------------------------------------------------------------
-async function updateThreshold(req: Request, res: Response) {
+async function updateThreshold(req: Request, res: Response, terminal = false) {
   try {
     const body = req.body as Record<string, unknown>
-    const storeId = storeIdBody(body)
+    const cashierSession = terminal ? await requireCashierTerminal(req, db) : null
+    const storeId = cashierSession ? cashierSession.storeId : storeIdBody(body)
+    if (terminal && body.store_id !== undefined && body.store_id !== storeId) {
+      throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    }
     const productId = uuid(body.product_id, 'product_id')
     const rawThreshold = body.low_stock_threshold
     if (!Number.isInteger(rawThreshold) || (rawThreshold as number) < 0 || (rawThreshold as number) > 1_000_000) {
       throw new ApiError(422, 'validation_failed', 'low_stock_threshold must be a non-negative integer.')
     }
     const threshold = rawThreshold as number
-    const actorId = await requireStoreManager(req, storeId)
+    const actor: Actor = cashierSession
+      ? { userId: null, employeeId: cashierSession.employeeId }
+      : { userId: await requireStoreManager(req, storeId), employeeId: null }
 
     const client = await db.connect()
     try {
@@ -202,7 +242,7 @@ async function updateThreshold(req: Request, res: Response) {
         })],
       )
       await advanceFeed(client, storeId, position)
-      await audit(client, storeId, actorId, 'inventory.threshold_updated', `${truncateForAudit(product.name, 60)}: low-stock threshold set to ${threshold}`)
+      await audit(client, storeId, actor, 'inventory.threshold_updated', `${truncateForAudit(product.name, 60)}: low-stock threshold set to ${threshold}`)
       await client.query('commit')
       res.json({ product_id: productId, low_stock_threshold: threshold, revision: product.revision, checkpoint: position.toString() })
     } catch (reason) {
@@ -227,10 +267,14 @@ export interface AdjustResult {
   movement_id: string
 }
 
-async function adjustStock(req: Request, res: Response) {
+async function adjustStock(req: Request, res: Response, terminal = false) {
   try {
     const body = req.body as Record<string, unknown>
-    const storeId = storeIdBody(body)
+    const cashierSession = terminal ? await requireCashierTerminal(req, db) : null
+    const storeId = cashierSession ? cashierSession.storeId : storeIdBody(body)
+    if (terminal && body.store_id !== undefined && body.store_id !== storeId) {
+      throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    }
     // A client-supplied idempotency key: a lost response (proxy timeout, dropped connection) must
     // not turn a retried "Save" click into a second, silently-doubled stock movement. Reuses the
     // same pos_operation_ledger replay mechanism orders.ts's push() already relies on for exactly
@@ -253,8 +297,12 @@ async function adjustStock(req: Request, res: Response) {
     const allowNegative = body.allow_negative === true
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex')
 
-    // 1+2: authenticate + authorize (owner/manager). 3: store scope is storeId itself, verified below.
-    const actorId = await requireStoreManager(req, storeId)
+    // 1+2: authenticate + authorize. Web session: owner/manager. Terminal: any active cashier may
+    // fill this out, but committing it needs a manager's PIN (ManagerApprovalModal, same trust
+    // model as refund/exchange) — never a web session. 3: store scope is storeId itself, verified above.
+    const actor: Actor = cashierSession
+      ? { userId: null, employeeId: uuid(body.approver_employee_id, 'Approver employee ID') }
+      : { userId: await requireStoreManager(req, storeId), employeeId: null }
 
     const client = await db.connect()
     try {
@@ -264,6 +312,7 @@ async function adjustStock(req: Request, res: Response) {
       // on the same store's stock rows in a different lock order. It also serializes two
       // concurrent identical retries, so the replay check below never races itself.
       let position = await lockFeedPosition(client, storeId)
+      if (actor.employeeId) await requireTerminalApprover(client, storeId, actor.employeeId)
       const replay = await client.query<{ payload_hash: string; result_json: AdjustResult }>(
         'select payload_hash, result_json from public.pos_operation_ledger where store_id=$1 and operation_id=$2',
         [storeId, operationId],
@@ -289,16 +338,16 @@ async function adjustStock(req: Request, res: Response) {
       // 8: immutable movement row.
       const movement = await client.query<{ id: string }>(
         `insert into public.pos_inventory_movements
-          (store_id, product_id, operation_id, delta, reason, adjustment_reason, note, actor_id, old_quantity, new_quantity)
-         values ($1,$2,gen_random_uuid(),$3,'manual_adjustment',$4,$5,$6,$7,$8)
+          (store_id, product_id, operation_id, delta, reason, adjustment_reason, note, actor_id, actor_employee_id, old_quantity, new_quantity)
+         values ($1,$2,gen_random_uuid(),$3,'manual_adjustment',$4,$5,$6,$7,$8,$9)
          returning id`,
-        [storeId, productId, delta, reasonCode, note, actorId, oldQuantity, newQuantity],
+        [storeId, productId, delta, reasonCode, note, actor.userId, actor.employeeId, oldQuantity, newQuantity],
       )
       const movementId = movement.rows[0].id
       // 9: update authoritative stock.
       await client.query('update public.pos_stock set current_stock=$1, updated_at=now() where store_id=$2 and product_id=$3', [newQuantity, storeId, productId])
       // 10: audit.
-      await audit(client, storeId, actorId, 'inventory.adjusted', `${truncateForAudit(stockable.name, 60)} (${truncateForAudit(stockable.sku, 30)}): ${oldQuantity} → ${newQuantity} (${delta > 0 ? '+' : ''}${delta}, ${reasonCode})`)
+      await audit(client, storeId, actor, 'inventory.adjusted', `${truncateForAudit(stockable.name, 60)} (${truncateForAudit(stockable.sku, 30)}): ${oldQuantity} → ${newQuantity} (${delta > 0 ? '+' : ''}${delta}, ${reasonCode})`)
       // 11: change feed.
       position += 1n
       await writeStockFeedEntry(client, storeId, position, productId, newQuantity)
@@ -385,7 +434,7 @@ async function createCycleCount(req: Request, res: Response) {
           [sessionId, storeId, productId, stockMap.get(productId) ?? 0],
         )
       }
-      await audit(client, storeId, actorId, 'inventory.cycle_count_started', `${ids.length} product${ids.length === 1 ? '' : 's'}`)
+      await audit(client, storeId, { userId: actorId, employeeId: null }, 'inventory.cycle_count_started', `${ids.length} product${ids.length === 1 ? '' : 's'}`)
       await client.query('commit')
     } catch (reason) {
       await client.query('rollback')
@@ -484,7 +533,7 @@ async function submitCycleCount(req: Request, res: Response) {
           [storeId, item.product_id, variance, session.rows[0].note, actorId, liveQuantity, counted, cycleCountId],
         )
         await client.query('update public.pos_stock set current_stock=$1, updated_at=now() where store_id=$2 and product_id=$3', [counted, storeId, item.product_id])
-        await audit(client, storeId, actorId, 'inventory.cycle_count_variance', `${truncateForAudit(stockable.name, 60)} (${truncateForAudit(stockable.sku, 30)}): ${liveQuantity} → ${counted} (${variance > 0 ? '+' : ''}${variance})`)
+        await audit(client, storeId, { userId: actorId, employeeId: null }, 'inventory.cycle_count_variance', `${truncateForAudit(stockable.name, 60)} (${truncateForAudit(stockable.sku, 30)}): ${liveQuantity} → ${counted} (${variance > 0 ? '+' : ''}${variance})`)
         position += 1n
         await writeStockFeedEntry(client, storeId, position, item.product_id, counted)
         adjusted.push({ product_id: item.product_id, old_quantity: liveQuantity, new_quantity: counted, delta: variance, movement_id: movement.rows[0].id })
@@ -492,7 +541,7 @@ async function submitCycleCount(req: Request, res: Response) {
       if (adjusted.length > 0) await advanceFeed(client, storeId, position)
 
       await client.query("update public.pos_cycle_counts set status='submitted', submitted_by=$1, submitted_at=now() where id=$2", [actorId, cycleCountId])
-      await audit(client, storeId, actorId, 'inventory.cycle_count_submitted', `${adjusted.length} adjusted, ${unchangedCount} unchanged`)
+      await audit(client, storeId, { userId: actorId, employeeId: null }, 'inventory.cycle_count_submitted', `${adjusted.length} adjusted, ${unchangedCount} unchanged`)
       await client.query('commit')
       const result: SubmitResult = { adjusted, unchanged_count: unchangedCount }
       res.json(result)
@@ -519,7 +568,7 @@ async function cancelCycleCount(req: Request, res: Response) {
         [storeId, cycleCountId],
       )
       if (!result.rowCount) throw new ApiError(409, 'cycle_count_not_open', 'This count is not open (not found, or already submitted/cancelled).')
-      await audit(client, storeId, actorId, 'inventory.cycle_count_cancelled', cycleCountId)
+      await audit(client, storeId, { userId: actorId, employeeId: null }, 'inventory.cycle_count_cancelled', cycleCountId)
       await client.query('commit')
       res.json({ id: cycleCountId, status: 'cancelled' })
     } catch (reason) {
@@ -540,3 +589,10 @@ inventoryRouter.get('/inventory/cycle-counts/:id', (req, res) => void getCycleCo
 inventoryRouter.patch('/inventory/cycle-counts/:id/items/:itemId', (req, res) => void recordCount(req, res))
 inventoryRouter.post('/inventory/cycle-counts/:id/submit', (req, res) => void submitCycleCount(req, res))
 inventoryRouter.post('/inventory/cycle-counts/:id/cancel', (req, res) => void cancelCycleCount(req, res))
+
+// Terminal (PIN-based) session: view stock/movements and manually adjust — cycle counts stay a
+// web-dashboard-only workflow for now.
+terminalInventoryRouter.get('/inventory', (req, res) => void listInventory(req, res, true))
+terminalInventoryRouter.get('/inventory/movements', (req, res) => void listMovements(req, res, true))
+terminalInventoryRouter.patch('/inventory/threshold', (req, res) => void updateThreshold(req, res, true))
+terminalInventoryRouter.post('/inventory/adjust', (req, res) => void adjustStock(req, res, true))

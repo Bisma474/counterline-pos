@@ -18,23 +18,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { calculateDiscountedLine, formatCents, parseCents, sumDiscountedLines } from '../../../../packages/domain/src/money'
-import { completeLocalExchange, type ExchangeReturnItem } from '../lib/checkout'
+import { completeLocalExchange, completeLocalTerminalExchange, type ExchangeReturnItem } from '../lib/checkout'
 import { posDb, type LocalCategory, type LocalProduct, type LocalStock } from '../lib/db'
 import { readReceipt, refundedQuantity, type SavedReceipt } from '../receipts/data'
 import { useReceiptStore } from '../receipts/useReceiptStore'
 import { requireSupabase } from '../lib/supabase'
+import { currentAccess, type TerminalCache } from '../terminal-auth/cache'
+import { ManagerApprovalModal, type ManagerApprovalEvidence } from '../terminal-auth/ManagerApprovalModal'
 import type { CartItem } from '../lib/pos-store'
 
 type Step = 'return' | 'replace' | 'tender'
 
-export function ExchangeScreen() {
+export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
   const { orderId = '' } = useParams()
   const navigate = useNavigate()
-  const scope = useReceiptStore(false)
+  const scope = useReceiptStore(terminal)
 
   const [receipt, setReceipt] = useState<SavedReceipt | null>()
   const [loadError, setLoadError] = useState('')
   const [access, setAccess] = useState<'checking' | 'granted' | 'denied'>('checking')
+  const [terminalCache, setTerminalCache] = useState<TerminalCache>()
+  const [approvalOpen, setApprovalOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -45,6 +49,14 @@ export function ExchangeScreen() {
         if (!active) return
         if (!savedReceipt) { setLoadError('This receipt is not saved for this store in this browser.'); setReceipt(null); return }
         setReceipt(savedReceipt)
+        if (terminal) {
+          const terminalAccess = await currentAccess()
+          if (active) {
+            if (terminalAccess?.policy.valid && terminalAccess.employee) { setTerminalCache(terminalAccess.cache); setAccess('granted') }
+            else setAccess('denied')
+          }
+          return
+        }
         const client = requireSupabase()
         const { data: { user } } = await client.auth.getUser()
         if (!user) { if (active) setAccess('denied'); return }
@@ -55,7 +67,7 @@ export function ExchangeScreen() {
       }
     })()
     return () => { active = false }
-  }, [orderId, scope.storeId])
+  }, [orderId, scope.storeId, terminal])
 
   const [step, setStep] = useState<Step>('return')
   const [returnSelected, setReturnSelected] = useState<Record<string, number>>({})
@@ -148,13 +160,37 @@ export function ExchangeScreen() {
   const canSubmit = Object.keys(returnSelected).length > 0 && replacementCart.length > 0 && !amountError && !busy
     && (method === 'cash' ? tenderedCents >= replacementTotals.totalCents : cardConfirmed)
 
+  const finishExchange = async (result: { newOrderId: string }) => {
+    const target = terminal ? `/pos/orders/${encodeURIComponent(result.newOrderId)}` : `/orders/${encodeURIComponent(result.newOrderId)}`
+    navigate(target, { replace: true, state: { committedOrderId: result.newOrderId } })
+  }
+
   const submit = async () => {
     if (!canSubmit || !receipt) return
+    if (terminal) { setApprovalOpen(true); return }
     setBusy(true); setError('')
     try {
       const returnItems: ExchangeReturnItem[] = Object.entries(returnSelected).map(([orderItemId, quantity]) => ({ orderItemId, quantity }))
       const result = await completeLocalExchange(receipt.order.id, returnItems, replacementCart, receipt.order.store_id, method, tenderedCents, reference.trim() || null)
-      navigate(`/orders/${encodeURIComponent(result.newOrderId)}`, { replace: true, state: { committedOrderId: result.newOrderId } })
+      await finishExchange(result)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The exchange could not be completed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Terminal path: the cashier already built the whole exchange above; this fires once a
+  // manager's PIN is verified offline (see ManagerApprovalModal) and posts through the
+  // terminal-cookie-authenticated endpoint instead of a web bearer token.
+  const submitTerminal = async (evidence: ManagerApprovalEvidence) => {
+    setApprovalOpen(false)
+    if (!canSubmit || !receipt) return
+    setBusy(true); setError('')
+    try {
+      const returnItems: ExchangeReturnItem[] = Object.entries(returnSelected).map(([orderItemId, quantity]) => ({ orderItemId, quantity }))
+      const result = await completeLocalTerminalExchange(receipt.order.id, returnItems, replacementCart, receipt.order.store_id, method, tenderedCents, reference.trim() || null, evidence.managerId)
+      await finishExchange(result)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The exchange could not be completed.')
     } finally {
@@ -164,12 +200,12 @@ export function ExchangeScreen() {
 
   if (scope.error) return <section className="receipt-page"><div role="alert"><p>{scope.error}</p></div></section>
   if (access === 'checking' || receipt === undefined) return <section className="receipt-page"><p role="status">Loading…</p></section>
-  if (access === 'denied') return <section className="receipt-page"><div role="alert"><h2>Not available</h2><p>Exchanges are available to store owners and managers only.</p></div></section>
+  if (access === 'denied') return <section className="receipt-page"><div role="alert"><h2>Not available</h2><p>{terminal ? 'Unlock this terminal before exchanging items.' : 'Exchanges are available to store owners and managers only.'}</p></div></section>
   if (loadError || receipt === null) return <section className="receipt-page"><div role="alert"><h2>Receipt not found</h2><p>{loadError}</p></div></section>
 
   return <section className="receipt-page exchange-page">
     <p className="kicker">EXCHANGE</p><h1>Exchange receipt {receipt.order.receipt_number}.</h1>
-    <div className="receipt-actions"><Link to={`/orders/${orderId}`}>← Back to receipt</Link></div>
+    <div className="receipt-actions"><Link to={terminal ? `/pos/orders/${orderId}` : `/orders/${orderId}`}>← Back to receipt</Link></div>
 
     {step === 'return' && <div className="refund-action">
       <h3>1. Select items to return</h3>
@@ -231,7 +267,11 @@ export function ExchangeScreen() {
       {amountError && <p className="form-notice error" role="alert">{amountError}</p>}
       {error && <p className="form-notice error" role="alert">{error}</p>}
       <div className="receipt-actions"><button type="button" className="secondary-cta" onClick={() => setStep('replace')} disabled={busy}>← Back</button>
-        <button type="button" className="cta" disabled={!canSubmit} onClick={() => void submit()}>{busy ? 'Completing exchange…' : 'Complete exchange'}</button></div>
+        <button type="button" className="cta" disabled={!canSubmit} onClick={() => void submit()}>{busy ? 'Completing exchange…' : terminal ? 'Get manager approval' : 'Complete exchange'}</button></div>
     </div>}
+    {approvalOpen && terminalCache && <ManagerApprovalModal cache={terminalCache}
+      title="Authorize this exchange" submitLabel="Approve exchange"
+      reason={`Approve this exchange for receipt ${receipt.order.receipt_number}.`}
+      onApprove={evidence => void submitTerminal(evidence)} onClose={() => setApprovalOpen(false)} />}
   </section>
 }

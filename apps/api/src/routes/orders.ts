@@ -6,11 +6,32 @@ import { ApiError, requireStoreMember, requireStoreManager, sendApiError } from 
 import { boundedInteger, calculateDiscountedLine, discountNeedsManagerApproval, MAX_CENTS, splitOrderItemRefundAmount, sumDiscountedLines, type LineDiscount } from '../../../../packages/domain/src/money.js'
 import { requireCashierTerminal, requireDeviceTerminal } from '../terminal-auth/routes.js'
 
+/** Who performed a refund/exchange/order-creation action: either a web-session owner/manager
+ * (auth.users) or a PIN-based terminal manager (terminal_employees) approving from a cashier
+ * terminal — see 202609240001_terminal_manager_refund_approval.sql. Exactly one side is set,
+ * never both, never neither; every write site below threads this through instead of a bare
+ * userId string so that invariant holds all the way from the HTTP handler to every insert. */
+type Actor = { userId: string; employeeId: null } | { userId: null; employeeId: string }
+
 /** Same action.verb / short descriptive target convention as terminal-auth's/inventory.ts's own
  * audit() helper — duplicated per-file rather than shared, matching this codebase's existing
  * convention (see apps/api/src/routes/audit.ts's own comment on the same choice). */
-async function audit(client: PoolClient, storeId: string, actorId: string, action: string, target: string): Promise<void> {
-  await client.query('insert into public.audit_log(store_id, actor_id, action, target) values ($1,$2,$3,$4)', [storeId, actorId, action, target])
+async function audit(client: PoolClient, storeId: string, actor: Actor, action: string, target: string): Promise<void> {
+  await client.query('insert into public.audit_log(store_id, actor_id, actor_employee_id, action, target) values ($1,$2,$3,$4,$5)',
+    [storeId, actor.userId, actor.employeeId, action, target])
+}
+
+/** Verifies a client-claimed approver id is an active, manager-role terminal employee for this
+ * store — the server-side half of the terminal manager-approval trust model already shipped for
+ * discount approval (validateOperation's manager_id check): the PIN itself is verified client-side
+ * only, against the cached credential already synced to the terminal; the server's job is just to
+ * confirm the claimed identity is really an active manager here, not to re-verify the PIN. */
+async function requireTerminalApprover(client: PoolClient, storeId: string, employeeId: string): Promise<void> {
+  const result = await client.query(
+    "select 1 from public.terminal_employees where id=$1 and store_id=$2 and role='manager' and active=true",
+    [employeeId, storeId],
+  )
+  if (!result.rowCount) throw new ApiError(422, 'validation_failed', 'Approval references an employee who is not an active manager for this store.')
 }
 
 export const ordersRouter = Router()
@@ -271,9 +292,9 @@ function parseRefundItems(raw: unknown): RequestedRefundItem[] | null {
  * one atomic exchange transaction later without a second, conflicting lock).
  */
 async function performRefund(
-  client: PoolClient, storeId: string, orderId: string, userId: string, reason: string | null,
+  client: PoolClient, storeId: string, orderId: string, actor: Actor, reason: string | null,
   requested: RequestedRefundItem[] | null, exchangeOrderId: string | null,
-): Promise<{ refund: { id: string; store_id: string; order_id: string; amount_cents: string; reason: string | null; refunded_by: string; created_at: string; exchange_order_id: string | null }; items: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }> }> {
+): Promise<{ refund: { id: string; store_id: string; order_id: string; amount_cents: string; reason: string | null; refunded_by: string | null; approved_by_employee_id: string | null; created_at: string; exchange_order_id: string | null }; items: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }> }> {
   const orderRes = await client.query('select 1 from public.pos_orders where store_id=$1 and id=$2', [storeId, orderId])
   if (!orderRes.rowCount) throw new ApiError(404, 'not_found', 'Order not found.')
 
@@ -316,11 +337,11 @@ async function performRefund(
   }
 
   const amountCents = toRefund.reduce((sum, item) => sum + item.amount_cents, 0)
-  const refundRes = await client.query<{ id: string; store_id: string; order_id: string; amount_cents: string; reason: string | null; refunded_by: string; created_at: string; exchange_order_id: string | null }>(
-    `insert into public.pos_refunds (store_id, order_id, amount_cents, reason, refunded_by, exchange_order_id)
-     values ($1,$2,$3,$4,$5,$6)
-     returning id, store_id, order_id, amount_cents::text as amount_cents, reason, refunded_by, created_at, exchange_order_id`,
-    [storeId, orderId, amountCents, reason, userId, exchangeOrderId],
+  const refundRes = await client.query<{ id: string; store_id: string; order_id: string; amount_cents: string; reason: string | null; refunded_by: string | null; approved_by_employee_id: string | null; created_at: string; exchange_order_id: string | null }>(
+    `insert into public.pos_refunds (store_id, order_id, amount_cents, reason, refunded_by, approved_by_employee_id, exchange_order_id)
+     values ($1,$2,$3,$4,$5,$6,$7)
+     returning id, store_id, order_id, amount_cents::text as amount_cents, reason, refunded_by, approved_by_employee_id, created_at, exchange_order_id`,
+    [storeId, orderId, amountCents, reason, actor.userId, actor.employeeId, exchangeOrderId],
   )
   const refundRow = refundRes.rows[0]
 
@@ -339,9 +360,9 @@ async function performRefund(
   let position = BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position)
   for (const [productId, quantity] of byProduct) {
     await client.query(
-      `insert into public.pos_inventory_movements (store_id, product_id, order_id, operation_id, delta, reason, actor_id)
-       values ($1,$2,$3,gen_random_uuid(),$4,'refund',$5)`,
-      [storeId, productId, orderId, quantity, userId],
+      `insert into public.pos_inventory_movements (store_id, product_id, order_id, operation_id, delta, reason, actor_id, actor_employee_id)
+       values ($1,$2,$3,gen_random_uuid(),$4,'refund',$5,$6)`,
+      [storeId, productId, orderId, quantity, actor.userId, actor.employeeId],
     )
     const stock = await client.query(`update public.pos_stock set current_stock=current_stock+$3, updated_at=now()
       where store_id=$1 and product_id=$2 returning current_stock`, [storeId, productId, quantity])
@@ -356,16 +377,22 @@ async function performRefund(
     values ($1,$2,'refund',$3,$4)`, [storeId, position.toString(), refundRow.id, { order_id: orderId, refund_id: refundRow.id, amount_cents: amountCents }])
   await client.query('update public.pos_sync_feed_state set last_position=$2 where store_id=$1', [storeId, position.toString()])
 
-  await audit(client, storeId, userId, requested === null ? 'refund.full' : 'refund.partial', `Order ${orderId}: refund ${refundRow.id} (${amountCents} cents, ${toRefund.length} line item${toRefund.length === 1 ? '' : 's'})`)
+  await audit(client, storeId, actor, requested === null ? 'refund.full' : 'refund.partial', `Order ${orderId}: refund ${refundRow.id} (${amountCents} cents, ${toRefund.length} line item${toRefund.length === 1 ? '' : 's'})`)
 
   return { refund: refundRow, items: toRefund }
 }
 
-async function refund(req: import('express').Request, res: import('express').Response) {
+async function refund(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
     const orderId = id(req.params.id, 'Order ID')
     const body = req.body as Record<string, unknown>
-    const storeId = id(body.store_id, 'Store ID')
+    // Terminal path: an active cashier session identifies the store (same as push()'s terminal
+    // branch); the actual approver is a separate manager PIN, validated below. Web path:
+    // requireStoreManager both identifies and authorizes the caller in one step, as before.
+    const storeId = terminal ? (await requireCashierTerminal(req, db)).storeId : id(body.store_id, 'Store ID')
+    if (terminal && body.store_id !== undefined && body.store_id !== storeId) {
+      throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    }
     // operation_id is optional for backward compatibility with callers (today's Receipt screen)
     // that predate idempotent refunds — a missing one falls back to a fresh, never-replayable
     // UUID, which is exactly today's no-idempotency behavior, not a regression. A caller that
@@ -376,13 +403,16 @@ async function refund(req: import('express').Request, res: import('express').Res
     const items = parseRefundItems(body.items)
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex')
 
-    const userId = await requireStoreManager(req, storeId)
+    const actor: Actor = terminal
+      ? { userId: null, employeeId: id(body.approver_employee_id, 'Approver employee ID') }
+      : { userId: await requireStoreManager(req, storeId), employeeId: null }
 
     const client = await db.connect()
     try {
       await client.query('begin')
       await client.query('insert into public.pos_sync_feed_state(store_id) values ($1) on conflict do nothing', [storeId])
       await client.query('select last_position from public.pos_sync_feed_state where store_id=$1 for update', [storeId])
+      if (terminal) await requireTerminalApprover(client, storeId, actor.employeeId!)
 
       const replay = await client.query('select payload_hash,result_json from public.pos_operation_ledger where store_id=$1 and operation_id=$2', [storeId, operationId])
       if (replay.rows[0]) {
@@ -392,7 +422,7 @@ async function refund(req: import('express').Request, res: import('express').Res
         return
       }
 
-      const result = await performRefund(client, storeId, orderId, userId, reason, items, null)
+      const result = await performRefund(client, storeId, orderId, actor, reason, items, null)
 
       const position = (await client.query('select last_position::text as last_position from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position
       await client.query(
@@ -428,11 +458,15 @@ async function refund(req: import('express').Request, res: import('express').Res
 // never written as a payment amount on either row; each row's own amount is independently correct
 // as if the two had happened separately.
 // ---------------------------------------------------------------------------
-async function exchange(req: import('express').Request, res: import('express').Response) {
+async function exchange(req: import('express').Request, res: import('express').Response, terminal = false) {
   try {
     const orderId = id(req.params.id, 'Order ID')
     const body = req.body as Record<string, unknown>
-    const storeId = id(body.store_id, 'Store ID')
+    const cashierSession = terminal ? await requireCashierTerminal(req, db) : null
+    const storeId = cashierSession ? cashierSession.storeId : id(body.store_id, 'Store ID')
+    if (terminal && body.store_id !== undefined && body.store_id !== storeId) {
+      throw new ApiError(403, 'cross_store_reference', 'This terminal belongs to a different store.')
+    }
     const operationId = id(body.operation_id, 'Operation ID')
     const reason = body.reason === null || body.reason === undefined || body.reason === ''
       ? null : text(body.reason, 'Exchange reason', 240)
@@ -440,15 +474,21 @@ async function exchange(req: import('express').Request, res: import('express').R
     if (!returnItems) throw new ApiError(422, 'validation_failed', 'return_items is required and must be a non-empty array.')
     const newOrderOperation = validateOperation(body.new_order)
     if (newOrderOperation.storeId !== storeId) throw new ApiError(422, 'cross_store_reference', 'The replacement order must be for the same store as the exchange.')
+    // Prefer the actual logged-in cashier's identity for the replacement sale, same as push()'s
+    // terminal branch — never trust whatever employee_id the client happened to send.
+    if (cashierSession) newOrderOperation.order.employee_id = cashierSession.employeeId
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex')
 
-    const userId = await requireStoreManager(req, storeId)
+    const actor: Actor = terminal
+      ? { userId: null, employeeId: id(body.approver_employee_id, 'Approver employee ID') }
+      : { userId: await requireStoreManager(req, storeId), employeeId: null }
 
     const client = await db.connect()
     try {
       await client.query('begin')
       await client.query('insert into public.pos_sync_feed_state(store_id) values ($1) on conflict do nothing', [storeId])
       await client.query('select last_position from public.pos_sync_feed_state where store_id=$1 for update', [storeId])
+      if (terminal) await requireTerminalApprover(client, storeId, actor.employeeId!)
 
       const replay = await client.query('select payload_hash,result_json from public.pos_operation_ledger where store_id=$1 and operation_id=$2', [storeId, operationId])
       if (replay.rows[0]) {
@@ -471,10 +511,10 @@ async function exchange(req: import('express').Request, res: import('express').R
         [storeId, newOrderOperation.operationId, newOrderHash, newOrderResult, acceptedCheckpoint],
       )
 
-      const refundResult = await performRefund(client, storeId, orderId, userId, reason, returnItems, newOrderOperation.operationId)
+      const refundResult = await performRefund(client, storeId, orderId, actor, reason, returnItems, newOrderOperation.operationId)
       const netAmountCents = newOrderOperation.totals.totalCents - Number(refundResult.refund.amount_cents)
 
-      await audit(client, storeId, userId, 'order.exchange',
+      await audit(client, storeId, actor, 'order.exchange',
         `Order ${orderId}: exchange -> new order ${newOrderOperation.operationId} (refund ${refundResult.refund.amount_cents} cents, new sale ${newOrderOperation.totals.totalCents} cents, net ${netAmountCents} cents)`)
 
       const position = (await client.query('select last_position::text as last_position from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position
@@ -502,3 +542,5 @@ ordersRouter.post('/push', (req, res) => void push(req, res))
 terminalOrdersRouter.post('/push', (req, res) => void push(req, res, true))
 ordersRouter.post('/:id/refund', (req, res) => void refund(req, res))
 ordersRouter.post('/:id/exchange', (req, res) => void exchange(req, res))
+terminalOrdersRouter.post('/:id/refund', (req, res) => void refund(req, res, true))
+terminalOrdersRouter.post('/:id/exchange', (req, res) => void exchange(req, res, true))

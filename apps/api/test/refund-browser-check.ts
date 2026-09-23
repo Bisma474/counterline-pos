@@ -42,7 +42,7 @@ for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_ch
   '202609180002_pos_orders_report_read_access.sql',
   '202609180002_store_business_details.sql', '202609180003_tax_rate_change_feed.sql',
   '202609180004_product_images.sql', '202609180005_refunds.sql', '202609190001_audit_log.sql',
-  '202609220001_inventory_operations.sql', '202609220002_product_variants.sql', '202609230001_partial_refunds.sql']) {
+  '202609220001_inventory_operations.sql', '202609220002_product_variants.sql', '202609230001_partial_refunds.sql', '202609240001_terminal_manager_refund_approval.sql']) {
   await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
 }
 

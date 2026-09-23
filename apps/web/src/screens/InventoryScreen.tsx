@@ -26,6 +26,8 @@ import { formatCents } from '../../../../packages/domain/src/money'
 import { posDb } from '../lib/db'
 import { activeStoreId, accessToken, configuredApiUrl } from '../lib/catalog'
 import { resolveFinancialAccess } from '../lib/management-access'
+import { currentAccess, type TerminalCache } from '../terminal-auth/cache'
+import { ManagerApprovalModal, type ManagerApprovalEvidence } from '../terminal-auth/ManagerApprovalModal'
 import './product-catalog.css'
 import './inventory.css'
 
@@ -158,25 +160,22 @@ function safeFormatCents(raw: string, currency: string): string {
 // Fetch helpers — same auth/fetch pattern as ProductCatalogScreen.tsx.
 // ---------------------------------------------------------------------------
 
-async function apiGet<T>(path: string): Promise<T> {
-  const token = await accessToken()
-  const resp = await fetch(`${configuredApiUrl()}${path}`, {
-    credentials: 'same-origin',
-    headers: { Authorization: `Bearer ${token}` },
-  })
+// terminal=true talks to the terminal-cookie-authenticated /pos/inventory/* routes instead of the
+// web bearer-token /inventory/* ones — same split as every other screen that gained a terminal
+// mode this session (ReceiptScreen, ExchangeScreen).
+async function apiGet<T>(path: string, terminal = false): Promise<T> {
+  const resp = terminal
+    ? await fetch(`${configuredApiUrl()}/pos${path}`, { credentials: 'include' })
+    : await fetch(`${configuredApiUrl()}${path}`, { credentials: 'same-origin', headers: { Authorization: `Bearer ${await accessToken()}` } })
   const data = (await resp.json().catch(() => ({}))) as T & { message?: string }
   if (!resp.ok) throw new Error(data?.message ?? `Server error (${resp.status})`)
   return data
 }
 
-async function apiSend<T = unknown>(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<T> {
-  const token = await accessToken()
-  const resp = await fetch(`${configuredApiUrl()}${path}`, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  })
+async function apiSend<T = unknown>(method: 'POST' | 'PATCH', path: string, body: unknown, terminal = false): Promise<T> {
+  const resp = terminal
+    ? await fetch(`${configuredApiUrl()}/pos${path}`, { method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    : await fetch(`${configuredApiUrl()}${path}`, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await accessToken()}` }, body: JSON.stringify(body) })
   const data = (await resp.json().catch(() => ({}))) as T & { message?: string }
   if (!resp.ok) throw new Error(data?.message ?? `Server error (${resp.status})`)
   return data
@@ -186,9 +185,12 @@ async function apiSend<T = unknown>(method: 'POST' | 'PATCH', path: string, body
 // Main screen
 // ---------------------------------------------------------------------------
 
-export function InventoryScreen() {
+export function InventoryScreen({ terminal = false }: { terminal?: boolean }) {
   const [access, setAccess] = useState<'loading' | 'granted' | 'denied'>('loading')
   const [accessErr, setAccessErr] = useState('')
+  const [terminalCache, setTerminalCache] = useState<TerminalCache>()
+  const [approvalOpen, setApprovalOpen] = useState(false)
+  const [pendingAdjust, setPendingAdjust] = useState<(() => Promise<void>) | null>(null)
   const [storeId, setStoreId] = useState('')
   const [currency, setCurrency] = useState('USD')
   const [isOnline, setIsOnline] = useState(navigator.onLine)
@@ -232,7 +234,14 @@ export function InventoryScreen() {
   // ── Bootstrap: store id + currency ──
   useEffect(() => {
     let live = true
-    void activeStoreId()
+    const storeIdFor = terminal
+      ? currentAccess().then(access => {
+          if (!access?.policy.valid || !access.employee) throw new Error('Unlock this terminal before opening inventory.')
+          setTerminalCache(access.cache)
+          return access.cache.device.store_id
+        })
+      : activeStoreId()
+    void storeIdFor
       .then(async (id) => {
         if (!live) return
         setStoreId(id)
@@ -241,11 +250,19 @@ export function InventoryScreen() {
       })
       .catch((e) => { if (live) setLoadErr(e instanceof Error ? e.message : 'Could not load store.') })
     return () => { live = false }
-  }, [])
+  }, [terminal])
 
-  // ── Access gate: owner/manager only ──
+  // ── Access gate: web session needs owner/manager; a terminal session just needs to be an
+  // active, unlocked cashier — viewing stock is not privileged, only the Adjust action is (gated
+  // separately below via ManagerApprovalModal, the same PIN-approval flow refund/exchange use). ──
   useEffect(() => {
     let active = true
+    if (terminal) {
+      void currentAccess()
+        .then(result => { if (active) setAccess(result?.policy.valid && result.employee ? 'granted' : 'denied') })
+        .catch(() => { if (active) { setAccess('denied'); setAccessErr('Unlock this terminal before opening inventory.') } })
+      return () => { active = false }
+    }
     void resolveFinancialAccess()
       .then(() => { if (active) setAccess('granted') })
       .catch((e) => {
@@ -254,7 +271,7 @@ export function InventoryScreen() {
         setAccessErr(e instanceof Error ? e.message : 'This page is available to store owners and managers only.')
       })
     return () => { active = false }
-  }, [])
+  }, [terminal])
 
   // ── Online/offline reactivity ──
   useEffect(() => {
@@ -293,7 +310,7 @@ export function InventoryScreen() {
         setItems(cached)
         return
       }
-      const data = await apiGet<{ items: InventoryRow[] }>(`/inventory?store_id=${encodeURIComponent(id)}`)
+      const data = await apiGet<{ items: InventoryRow[] }>(`/inventory?store_id=${encodeURIComponent(id)}`, terminal)
       setItems(data.items)
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : 'Could not load inventory.')
@@ -316,9 +333,10 @@ export function InventoryScreen() {
     }, { replace: true })
   }
 
-  // ── Resume an in-progress cycle count from the URL (e.g. after a refresh) ──
+  // ── Resume an in-progress cycle count from the URL (e.g. after a refresh) — cycle counts are
+  // web-dashboard-only, so this never applies to a terminal session. ──
   useEffect(() => {
-    if (!storeId || access !== 'granted') return
+    if (terminal || !storeId || access !== 'granted') return
     const cid = searchParams.get('cycle_count')
     if (!cid) return
     setMode('cycle-count')
@@ -397,7 +415,7 @@ export function InventoryScreen() {
     try {
       const result = await apiSend<{ product_id: string; low_stock_threshold: number }>('PATCH', '/inventory/threshold', {
         store_id: storeId, product_id: row.product_id, low_stock_threshold: n,
-      })
+      }, terminal)
       setItems((prev) => prev?.map((it) => it.product_id === row.product_id
         ? { ...it, low_stock_threshold: result.low_stock_threshold, status: computeStatus(it.current_stock, result.low_stock_threshold) }
         : it) ?? prev)
@@ -547,8 +565,8 @@ export function InventoryScreen() {
     return (
       <div className="pc-page">
         <div className="inv-gate">
-          <h2>Owners and managers only</h2>
-          <p>{accessErr || 'This page is available to store owners and managers only.'}</p>
+          <h2>{terminal ? 'Unlock this terminal' : 'Owners and managers only'}</h2>
+          <p>{accessErr || (terminal ? 'Unlock this terminal before opening inventory.' : 'This page is available to store owners and managers only.')}</p>
         </div>
       </div>
     )
@@ -563,13 +581,15 @@ export function InventoryScreen() {
         <div>
           <p className="pc-breadcrumb">Store Workspace <span>/</span> Inventory</p>
           <h1 className="pc-title">Inventory operations.</h1>
-          <p className="pc-subtitle">Track stock levels, adjust counts, and run cycle counts across your catalog.</p>
+          <p className="pc-subtitle">{terminal ? 'Track stock levels and adjust counts.' : 'Track stock levels, adjust counts, and run cycle counts across your catalog.'}</p>
         </div>
         <div className="pc-actions">
-          <div className="inv-mode-tabs">
+          {/* Cycle counts stay a web-dashboard-only workflow for now — a terminal session only
+              gets the list + adjust, so there's no mode switch to show here. */}
+          {!terminal && <div className="inv-mode-tabs">
             <button type="button" className={`inv-mode-tab ${mode === 'list' ? 'active' : ''}`} onClick={() => setMode('list')}>Inventory</button>
             <button type="button" className={`inv-mode-tab ${mode === 'cycle-count' ? 'active' : ''}`} onClick={() => setMode('cycle-count')}>Cycle count</button>
-          </div>
+          </div>}
           {mode === 'list' && (
             <>
               <button type="button" className="pc-btn-ghost" onClick={() => void loadInventory(storeId)} disabled={loading || !storeId || !isOnline}>
@@ -578,9 +598,9 @@ export function InventoryScreen() {
               <button type="button" className="pc-btn-ghost" onClick={() => setAllMovementsOpen(true)} disabled={!storeId}>
                 All movements
               </button>
-              <button type="button" className="pc-btn-primary" onClick={() => setMode('cycle-count')} disabled={!storeId}>
+              {!terminal && <button type="button" className="pc-btn-primary" onClick={() => setMode('cycle-count')} disabled={!storeId}>
                 Start cycle count
-              </button>
+              </button>}
             </>
           )}
         </div>
@@ -935,11 +955,13 @@ export function InventoryScreen() {
           initialTab={drawer.tab}
           storeId={storeId}
           isOnline={isOnline}
+          terminal={terminal}
+          terminalCache={terminalCache}
           onClose={() => setDrawer(null)}
           onAdjusted={(result) => applyStockUpdate(result.product_id, result.new_quantity)}
         />
       )}
-      {allMovementsOpen && <AllMovementsDrawer storeId={storeId} onClose={() => setAllMovementsOpen(false)} />}
+      {allMovementsOpen && <AllMovementsDrawer storeId={storeId} terminal={terminal} onClose={() => setAllMovementsOpen(false)} />}
     </div>
   )
 }
@@ -951,12 +973,14 @@ export function InventoryScreen() {
 // ---------------------------------------------------------------------------
 
 function ProductDrawer({
-  row, initialTab, storeId, isOnline, onClose, onAdjusted,
+  row, initialTab, storeId, isOnline, terminal, terminalCache, onClose, onAdjusted,
 }: {
   row: InventoryRow
   initialTab: 'adjust' | 'history'
   storeId: string
   isOnline: boolean
+  terminal: boolean
+  terminalCache?: TerminalCache
   onClose: () => void
   onAdjusted: (result: AdjustResult) => void
 }) {
@@ -984,7 +1008,7 @@ function ProductDrawer({
   const loadMovements = () => {
     setMvLoading(true)
     setMvErr('')
-    apiGet<{ items: MovementRow[] }>(`/inventory/movements?store_id=${encodeURIComponent(storeId)}&product_id=${encodeURIComponent(row.product_id)}&limit=50`)
+    apiGet<{ items: MovementRow[] }>(`/inventory/movements?store_id=${encodeURIComponent(storeId)}&product_id=${encodeURIComponent(row.product_id)}&limit=50`, terminal)
       .then((data) => setMovements(data.items))
       .catch((e) => setMvErr(e instanceof Error ? e.message : 'Could not load movement history.'))
       .finally(() => setMvLoading(false))
@@ -1011,18 +1035,16 @@ function ProductDrawer({
     return e
   }
 
-  const submit = async () => {
-    const fieldErrs = validate()
-    if (Object.keys(fieldErrs).length) { setErrs(fieldErrs); return }
-    if (!isOnline) { setSubmitErr('Connect to the internet to adjust stock.'); return }
-    if (wouldGoNegative && !confirmNegative) { setConfirmNegative(true); return }
+  const [approvalOpen, setApprovalOpen] = useState(false)
+
+  const performAdjust = async (approverEmployeeId?: string) => {
     setBusy(true)
     setSubmitErr('')
     try {
       const result = await apiSend<AdjustResult>('POST', '/inventory/adjust', {
         store_id: storeId, product_id: row.product_id, delta, reason, note: note.trim(), operation_id: operationId,
-        allow_negative: wouldGoNegative,
-      })
+        allow_negative: wouldGoNegative, ...(approverEmployeeId ? { approver_employee_id: approverEmployeeId } : {}),
+      }, terminal)
       await posDb.server_stock.put({ product_id: result.product_id, current_stock: result.new_quantity, updated_at: new Date().toISOString() })
       setCurrent(result.new_quantity)
       setLastResult(result)
@@ -1040,6 +1062,18 @@ function ProductDrawer({
     } finally {
       setBusy(false)
     }
+  }
+
+  // Terminal path: any cashier can fill out the adjustment, but committing it requires a
+  // manager's PIN (ManagerApprovalModal — same modal/trust model as refund/exchange approval),
+  // never a web session.
+  const submit = async () => {
+    const fieldErrs = validate()
+    if (Object.keys(fieldErrs).length) { setErrs(fieldErrs); return }
+    if (!isOnline) { setSubmitErr('Connect to the internet to adjust stock.'); return }
+    if (wouldGoNegative && !confirmNegative) { setConfirmNegative(true); return }
+    if (terminal) { setApprovalOpen(true); return }
+    await performAdjust()
   }
 
   return (
@@ -1163,12 +1197,17 @@ function ProductDrawer({
         {tab === 'adjust' && (
           <div className="pc-drawer-foot">
             <button type="button" className="pc-submit" disabled={busy || !isOnline} onClick={() => void submit()}>
-              {busy ? 'Saving…' : wouldGoNegative && confirmNegative ? 'Confirm adjustment' : 'Save adjustment'}
+              {busy ? 'Saving…' : terminal ? 'Get manager approval' : wouldGoNegative && confirmNegative ? 'Confirm adjustment' : 'Save adjustment'}
             </button>
             <button type="button" className="pc-cancel" onClick={onClose} disabled={busy}>Close</button>
           </div>
         )}
       </div>
+      {approvalOpen && terminalCache && <ManagerApprovalModal cache={terminalCache}
+        title="Authorize this stock adjustment" submitLabel="Approve adjustment"
+        reason={`Approve ${delta > 0 ? '+' : ''}${delta} to ${row.name} (${reason || 'reason pending'}).`}
+        onApprove={evidence => { setApprovalOpen(false); void performAdjust(evidence.managerId) }}
+        onClose={() => setApprovalOpen(false)} />}
     </div>
   )
 }
@@ -1177,7 +1216,7 @@ function ProductDrawer({
 // Store-wide "All movements" panel.
 // ---------------------------------------------------------------------------
 
-function AllMovementsDrawer({ storeId, onClose }: { storeId: string; onClose: () => void }) {
+function AllMovementsDrawer({ storeId, terminal, onClose }: { storeId: string; terminal: boolean; onClose: () => void }) {
   const [movements, setMovements] = useState<MovementRow[] | null>(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
@@ -1185,12 +1224,12 @@ function AllMovementsDrawer({ storeId, onClose }: { storeId: string; onClose: ()
   useEffect(() => {
     let live = true
     setLoading(true)
-    apiGet<{ items: MovementRow[] }>(`/inventory/movements?store_id=${encodeURIComponent(storeId)}&limit=200`)
+    apiGet<{ items: MovementRow[] }>(`/inventory/movements?store_id=${encodeURIComponent(storeId)}&limit=200`, terminal)
       .then((data) => { if (live) setMovements(data.items) })
       .catch((e) => { if (live) setErr(e instanceof Error ? e.message : 'Could not load movement history.') })
       .finally(() => { if (live) setLoading(false) })
     return () => { live = false }
-  }, [storeId])
+  }, [storeId, terminal])
 
   return (
     <div className="pc-overlay" role="dialog" aria-modal="true" aria-label="All inventory movements" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>

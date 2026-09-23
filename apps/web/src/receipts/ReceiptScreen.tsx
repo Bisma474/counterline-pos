@@ -8,6 +8,8 @@ import { useReceiptStore } from './useReceiptStore'
 import { accessToken, configuredApiUrl } from '../lib/catalog'
 import { posDb } from '../lib/db'
 import { requireSupabase } from '../lib/supabase'
+import { currentAccess, type TerminalCache } from '../terminal-auth/cache'
+import { ManagerApprovalModal, type ManagerApprovalEvidence } from '../terminal-auth/ManagerApprovalModal'
 
 export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
   const { orderId = '' } = useParams()
@@ -28,15 +30,27 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
   }, [scope.storeId, orderId, attempt])
   const failure = scope.error || error
 
-  // Refund is an owner/manager-only, web-session action (never on a cashier terminal) — resolve
-  // that role the same way RegisterScreen resolves customer-access authorization.
+  // Web session: refund is an owner/manager-only action, resolved the same way RegisterScreen
+  // resolves customer-access authorization. Terminal session: any cashier can select items to
+  // refund, but submitting requires a manager's PIN (ManagerApprovalModal, the same modal/trust
+  // model already used to authorize a >20% discount) — so canRefund there just means "a terminal
+  // session is active," not "this specific person may refund."
   const [canRefund, setCanRefund] = useState(false)
   const [refunding, setRefunding] = useState(false)
   const [refundError, setRefundError] = useState('')
+  const [terminalCache, setTerminalCache] = useState<TerminalCache>()
+  const [approvalOpen, setApprovalOpen] = useState(false)
   useEffect(() => {
-    if (terminal || !scope.storeId) return
+    if (!scope.storeId) return
     let active = true
     void (async () => {
+      if (terminal) {
+        try {
+          const access = await currentAccess()
+          if (access?.policy.valid && access.employee) { if (active) { setCanRefund(true); setTerminalCache(access.cache) } }
+        } catch { /* silent — the refund action just stays hidden if terminal access resolution fails */ }
+        return
+      }
       try {
         const client = requireSupabase()
         const { data: { user } } = await client.auth.getUser()
@@ -69,12 +83,47 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
   // readReceipt()'s liveQuery already tracks refund_items, so this reactively updates the same way
   // the old single refunded_at field used to, and now correctly across any number of separate
   // partial refunds instead of just one.
+  const pendingItems = () => {
+    const items = Object.entries(selected).filter(([, quantity]) => quantity > 0).map(([order_item_id, quantity]) => ({ order_item_id, quantity }))
+    if (!items.length) { setRefundError('Select at least one item to refund.'); return null }
+    return items
+  }
+
+  // Shared by both paths: apply the server's authoritative refund response into local Dexie.
+  const applyRefundResult = async (refund: { id: string; amount_cents: string; reason: string | null; refunded_by: string | null; created_at: string }, refundedItems: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }>) => {
+    if (!receipt) return
+    await posDb.transaction('rw', posDb.refunds, posDb.refund_items, posDb.orders, async () => {
+      await posDb.refunds.put({
+        id: refund.id, store_id: receipt.order.store_id, order_id: receipt.order.id,
+        amount_cents: Number(refund.amount_cents), reason: refund.reason, refunded_by: refund.refunded_by, created_at: refund.created_at,
+      })
+      await posDb.refund_items.bulkPut(refundedItems.map(item => ({
+        id: `${refund.id}:${item.order_item_id}`, refund_id: refund.id, order_item_id: item.order_item_id,
+        product_id: item.product_id, quantity: item.quantity, amount_cents: item.amount_cents,
+      })))
+      // Best-effort summary fields for screens that only need "was this ever refunded, roughly
+      // how much" (e.g. the order-history list) — the refunds/refund_items tables above are the
+      // source of truth for anything that needs per-line or per-event precision.
+      await posDb.orders.update(receipt.order.id, {
+        refunded_at: new Date().toISOString(),
+        refunded_amount_cents: (receipt.order.refunded_amount_cents ?? 0) + Number(refund.amount_cents),
+      })
+    })
+    setSelected({})
+  }
+
+  // "Refunded" (the summary banner) is derived straight from the local refunds/refund_items
+  // tables (written above right after a successful call), not from transient component state —
+  // readReceipt()'s liveQuery already tracks refund_items, so this reactively updates the same way
+  // the old single refunded_at field used to, and now correctly across any number of separate
+  // partial refunds instead of just one.
   const submitRefund = async () => {
     if (!receipt || refunding) return
-    const items = Object.entries(selected).filter(([, quantity]) => quantity > 0).map(([order_item_id, quantity]) => ({ order_item_id, quantity }))
-    if (!items.length) { setRefundError('Select at least one item to refund.'); return }
+    const items = pendingItems()
+    if (!items) return
     const summary = items.map(({ order_item_id, quantity }) => `${quantity} × ${receipt.items.find(item => item.id === order_item_id)?.snapshot_name ?? 'item'}`).join(', ')
     if (!window.confirm(`Refund ${summary} from receipt ${receipt.order.receipt_number}? This cannot be undone.`)) return
+    if (terminal) { setApprovalOpen(true); return }
     setRefunding(true)
     setRefundError('')
     try {
@@ -91,26 +140,39 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
         items?: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }>
       }
       if (!response.ok || !data.refund || !data.items) throw new Error(data.message ?? `Server error (${response.status})`)
-      const refund = data.refund
-      const refundedItems = data.items
-      await posDb.transaction('rw', posDb.refunds, posDb.refund_items, posDb.orders, async () => {
-        await posDb.refunds.put({
-          id: refund.id, store_id: receipt.order.store_id, order_id: receipt.order.id,
-          amount_cents: Number(refund.amount_cents), reason: refund.reason, refunded_by: refund.refunded_by, created_at: refund.created_at,
-        })
-        await posDb.refund_items.bulkPut(refundedItems.map(item => ({
-          id: `${refund.id}:${item.order_item_id}`, refund_id: refund.id, order_item_id: item.order_item_id,
-          product_id: item.product_id, quantity: item.quantity, amount_cents: item.amount_cents,
-        })))
-        // Best-effort summary fields for screens that only need "was this ever refunded, roughly
-        // how much" (e.g. the order-history list) — the refunds/refund_items tables above are the
-        // source of truth for anything that needs per-line or per-event precision.
-        await posDb.orders.update(receipt.order.id, {
-          refunded_at: new Date().toISOString(),
-          refunded_amount_cents: (receipt.order.refunded_amount_cents ?? 0) + Number(refund.amount_cents),
-        })
+      await applyRefundResult(data.refund, data.items)
+    } catch (reason) {
+      setRefundError(reason instanceof Error ? reason.message : 'Could not refund this order.')
+    } finally {
+      setRefunding(false)
+    }
+  }
+
+  // Terminal path: the cashier already picked items and confirmed above; this fires once a
+  // manager's PIN is verified (offline, against the terminal's own cached credential — see
+  // ManagerApprovalModal) and posts to the terminal-cookie-authenticated endpoint instead of a
+  // web bearer token.
+  const submitTerminalRefund = async (evidence: ManagerApprovalEvidence) => {
+    if (!receipt) return
+    const items = pendingItems()
+    setApprovalOpen(false)
+    if (!items) return
+    setRefunding(true)
+    setRefundError('')
+    try {
+      const response = await fetch(`${configuredApiUrl()}/pos/orders/${receipt.order.id}/refund`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: receipt.order.store_id, operation_id: crypto.randomUUID(), items, approver_employee_id: evidence.managerId }),
       })
-      setSelected({})
+      const data = (await response.json()) as {
+        code?: string; message?: string
+        refund?: { id: string; amount_cents: string; reason: string | null; refunded_by: string | null; created_at: string }
+        items?: Array<{ order_item_id: string; product_id: string; quantity: number; amount_cents: number }>
+      }
+      if (!response.ok || !data.refund || !data.items) throw new Error(data.message ?? `Server error (${response.status})`)
+      await applyRefundResult(data.refund, data.items)
     } catch (reason) {
       setRefundError(reason instanceof Error ? reason.message : 'Could not refund this order.')
     } finally {
@@ -148,9 +210,13 @@ export function ReceiptScreen({ terminal = false }: { terminal?: boolean }) {
             <button type="button" className="cta" onClick={() => void submitRefund()} disabled={refunding || !Object.keys(selected).length}>
               {refunding ? 'Refunding…' : 'Refund selected items'}
             </button>
-            <Link className="secondary-cta" to={`/orders/${receipt.order.id}/exchange`}>Exchange items instead →</Link>
+            <Link className="secondary-cta" to={terminal ? `/pos/orders/${receipt.order.id}/exchange` : `/orders/${receipt.order.id}/exchange`}>Exchange items instead →</Link>
             {refundError && <p role="alert" className="form-notice error">{refundError}</p>}
           </> : <p role="status">Every item on this receipt has been fully refunded.</p>}
         </div>}</>}
+    {approvalOpen && terminalCache && <ManagerApprovalModal cache={terminalCache}
+      title="Authorize this refund" submitLabel="Approve refund"
+      reason={`Approve refunding the selected item(s) from receipt ${receipt?.order.receipt_number ?? ''}.`}
+      onApprove={evidence => void submitTerminalRefund(evidence)} onClose={() => setApprovalOpen(false)} />}
   </section>
 }

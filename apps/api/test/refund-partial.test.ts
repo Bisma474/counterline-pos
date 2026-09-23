@@ -34,7 +34,7 @@ const MIGRATIONS = [
   '202609200001_service_role_only_rls_policies.sql',
   '202609220001_inventory_operations.sql',
   '202609220002_product_variants.sql',
-  '202609230001_partial_refunds.sql',
+  '202609230001_partial_refunds.sql', '202609240001_terminal_manager_refund_approval.sql',
 ]
 
 test('Partial refund: quantity limits, repeat refunds, idempotency, RBAC, concurrency, and the DB-trigger backstop', async () => {
