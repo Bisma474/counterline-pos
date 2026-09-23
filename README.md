@@ -294,4 +294,3 @@ Some browser runners build the web app with fixture configuration. Run the norma
 - [Receipts](docs/receipts/README.md)
 - [Product variants](docs/product-variants/README.md)
 - [Inventory plan](docs/phase-2-inventory-operations-plan.md)
-
