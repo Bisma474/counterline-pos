@@ -24,7 +24,7 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
   useEffect(() => {
     let active = true
     setServer([]); setNextCursor(null); setError('')
-    void searchLocalCustomers(storeId, query).then(rows => { if (active) setLocal(rows) }).catch(reason => { if (active) { setLocal([]); setError(reason instanceof Error ? reason.message : 'Invalid phone search.') } })
+    void searchLocalCustomers(storeId, query).then(rows => { if (active) setLocal(rows) }).catch(reason => { if (active) { setLocal([]); setError(reason instanceof Error ? reason.message : 'Invalid search.') } })
     return () => { active = false }
   }, [storeId, query])
   const onlineSearch = async (cursor: string | null = null) => {
@@ -54,13 +54,13 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
   const matches = [...local, ...server.filter(remote => !local.some(customer => customer.id === remote.id))]
   return <div className="crm-finder">
     <section className="crm-panel" aria-labelledby="crm-search-title"><h2 id="crm-search-title">Find a customer</h2>
-      <p>Search by international phone number. Local matches appear immediately; online lookup adds saved store matches.</p>
-      <label>Phone with country code<input type="tel" inputMode="tel" autoComplete="off" placeholder="+923001234567" value={query} onChange={event => { setQuery(event.target.value); setMessage('') }} /></label>
-      <button type="button" className="secondary-cta" disabled={!query.trim() || searching || !navigator.onLine} onClick={() => void onlineSearch()}>{searching ? 'Searching…' : 'Search online'}</button>
-      {query.trim() && <div className="crm-results" role="region" aria-live="polite" aria-label="Customer matches">
+      <p>Search by name or phone number (with country code), or leave it blank to browse every customer saved on this store.</p>
+      <label>Name or phone<input type="text" autoComplete="off" placeholder="Jane Doe or +923001234567" value={query} onChange={event => { setQuery(event.target.value); setMessage('') }} /></label>
+      <button type="button" className="secondary-cta" disabled={searching || !navigator.onLine} onClick={() => void onlineSearch()}>{searching ? 'Searching…' : 'Search online'}</button>
+      <div className="crm-results" role="region" aria-live="polite" aria-label="Customer matches">
         {matches.length ? <ul>{matches.map(customer => <li key={customer.id}><span><strong>{customer.name}</strong><small>{customer.phone_normalized ? `+${customer.phone_normalized}` : 'No phone'} · {customer.sync_status === 'synced' ? 'Saved' : customer.sync_status === 'failed' ? 'Needs review' : 'Pending sync'}</small>{customer.failure_reason && <small role="status">{customer.failure_reason}</small>}</span>
-          {onSelect && <button type="button" className="secondary-cta" onClick={() => onSelect(customer)}>Select {customer.name}</button>}</li>)}</ul> : <p className="crm-empty">No local matches. Search online or create a new customer.</p>}
-      </div>}
+          {onSelect && <button type="button" className="secondary-cta" onClick={() => onSelect(customer)}>Select {customer.name}</button>}</li>)}</ul> : <p className="crm-empty">{query.trim() ? 'No local matches. Search online or create a new customer.' : 'No customers saved on this browser yet. Search online or create one below.'}</p>}
+      </div>
       {nextCursor && <button type="button" className="text-action" disabled={searching} onClick={() => void onlineSearch(nextCursor)}>Load more matches</button>}
     </section>
     <section className="crm-panel" aria-labelledby="crm-create-title"><h2 id="crm-create-title">Create customer</h2>

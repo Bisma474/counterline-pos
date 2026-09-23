@@ -4,10 +4,18 @@ import { posDb, type LocalCustomer } from './db'
 export { createLocalCustomer, searchLocalCustomers } from './customer-local'
 
 type SearchResult = { customers: Array<{ id: string; store_id: string; name: string; phone_normalized: string | null }>; next_cursor: string | null }
-export async function searchServerCustomers(storeId: string, rawPhone: string, terminal: boolean, cursor: string | null = null): Promise<SearchResult> {
-  const phone = normalizedPhone(rawPhone)
-  if (!phone) throw new Error('Enter a phone number with its country code.')
-  const query = new URLSearchParams({ phone: `+${phone}`, limit: '20' })
+// A query starting with '+' searches by phone (exact prefix); anything else — including empty,
+// which browses the store's whole customer list — searches by name substring server-side.
+export async function searchServerCustomers(storeId: string, rawQuery: string, terminal: boolean, cursor: string | null = null): Promise<SearchResult> {
+  const trimmed = rawQuery.trim()
+  const query = new URLSearchParams({ limit: '20' })
+  if (trimmed.startsWith('+')) {
+    const phone = normalizedPhone(rawQuery)
+    if (!phone) throw new Error('Enter a phone number with its country code.')
+    query.set('phone', `+${phone}`)
+  } else if (trimmed) {
+    query.set('q', trimmed)
+  }
   if (!terminal) query.set('store_id', storeId)
   if (cursor) query.set('cursor', cursor)
   const response = await fetch(`${configuredApiUrl()}${terminal ? '/pos/customers' : '/customers'}?${query}`, {
