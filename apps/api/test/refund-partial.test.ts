@@ -35,6 +35,14 @@ const MIGRATIONS = [
   '202609220001_inventory_operations.sql',
   '202609220002_product_variants.sql',
   '202609230001_partial_refunds.sql', '202609240001_terminal_manager_refund_approval.sql',
+  '202609260001_customer_phone_uniqueness.sql',
+  '202609270001_operation_ledger_entity_type.sql',
+  '202609270002_store_scoped_employee_fks.sql',
+  '202609270003_refund_items_store_scoped_fk.sql',
+  '202609270006_cycle_count_quantity_checks.sql',
+  '202609270008_stores_locale_check.sql',
+  '202609270009_auth_user_fk_on_delete.sql',
+  '202609270011_refund_amount_integrity.sql',
 ]
 
 test('Partial refund: quantity limits, repeat refunds, idempotency, RBAC, concurrency, and the DB-trigger backstop', async () => {
