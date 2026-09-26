@@ -18,7 +18,8 @@ test('device customer API enforces search scope and returns durable replay resul
       create function auth.uid() returns uuid language sql as 'select null::uuid';
       create function auth.jwt() returns jsonb language sql as 'select ''{}''::jsonb';`)
     for (const name of ['202609130001_auth_and_stores.sql', '202609150001_catalog_checkout_sync.sql',
-      '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql', '202609160001_customers_and_sale_attachment.sql', '202609220002_product_variants.sql']) {
+      '202609150001_terminal_employee_access.sql', '202609150002_terminal_device_sessions.sql', '202609160001_customers_and_sale_attachment.sql', '202609220002_product_variants.sql',
+      '202609260001_customer_phone_uniqueness.sql']) {
       await database.exec((await readFile(root + `supabase/migrations/${name}`, 'utf8')).replace('create extension if not exists pgcrypto;', ''))
     }
     const owner = randomUUID(), store = randomUUID(), otherStore = randomUUID(), device = randomUUID(), employee = randomUUID()
@@ -59,7 +60,13 @@ test('device customer API enforces search scope and returns durable replay resul
     assert.equal((await post({ ...payload, customer: { ...payload.customer, name: 'Changed' } })).status, 409)
     const crossStore = await post({ ...payload, operation_id: randomUUID(), customer: { ...payload.customer, id: randomUUID(), store_id: otherStore } })
     assert.equal(crossStore.status, 403)
-    const second = await post({ ...payload, operation_id: randomUUID(), customer: { ...payload.customer, id: randomUUID(), name: 'Second customer' } })
+    const duplicatePhone = await post({ ...payload, operation_id: randomUUID(), customer: { ...payload.customer, id: randomUUID(), name: 'Duplicate phone customer' } })
+    assert.equal(duplicatePhone.status, 409)
+    assert.equal((await duplicatePhone.json() as { code: string }).code, 'duplicate_phone')
+    // Distinct phone (shares a prefix with the first customer's, so the phone-prefix pagination
+    // check below still exercises two matches) — a per-store unique(store_id, phone_normalized)
+    // index now rejects two customers sharing the exact same phone number.
+    const second = await post({ ...payload, operation_id: randomUUID(), customer: { ...payload.customer, id: randomUUID(), name: 'Second customer', phone_normalized: '923001234568' } })
     assert.equal(second.status, 200)
     // No phone and no name query at all now browses the whole store customer list — a customer
     // saved without a phone (phone is optional) would otherwise never be findable again, since a
@@ -72,14 +79,14 @@ test('device customer API enforces search scope and returns durable replay resul
     const byNameBody = await byName.json() as { customers: Array<{ name: string }> }
     assert.equal(byNameBody.customers.length, 1)
     assert.equal(byNameBody.customers[0].name, 'Second customer')
-    const search = await fetch('http://127.0.0.1:3182/pos/customers?phone=%2B923001234567&limit=1', { headers })
+    const search = await fetch('http://127.0.0.1:3182/pos/customers?phone=%2B92300123456&limit=1', { headers })
     assert.equal(search.status, 200)
     const firstPage = await search.json() as { customers: unknown[]; next_cursor: string | null }
     assert.equal(firstPage.customers.length, 1)
     assert.ok(firstPage.next_cursor)
-    const next = await fetch(`http://127.0.0.1:3182/pos/customers?phone=%2B923001234567&limit=1&cursor=${encodeURIComponent(firstPage.next_cursor!)}`, { headers })
+    const next = await fetch(`http://127.0.0.1:3182/pos/customers?phone=%2B92300123456&limit=1&cursor=${encodeURIComponent(firstPage.next_cursor!)}`, { headers })
     assert.equal(next.status, 200)
     assert.equal((await next.json() as { customers: unknown[]; next_cursor: string | null }).customers.length, 1)
-    assert.equal((await fetch('http://127.0.0.1:3182/pos/customers?phone=%2B923001234567', { headers: { ...headers, Cookie: `terminal_access=${access}` } })).status, 401)
+    assert.equal((await fetch('http://127.0.0.1:3182/pos/customers?phone=%2B92300123456', { headers: { ...headers, Cookie: `terminal_access=${access}` } })).status, 401)
   } finally { server?.closeAllConnections(); server?.close(); await database.close(); await db.end() }
 })

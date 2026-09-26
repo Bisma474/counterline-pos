@@ -20,7 +20,7 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const normalizedName = name.trim().replace(/\s+/g, ' ')
-  const nameError = normalizedName.length > 30 ? 'Customer name must be 30 characters or fewer.' : ''
+  const nameError = normalizedName.length > 160 ? 'Customer name must be 160 characters or fewer.' : ''
   useEffect(() => {
     let active = true
     setServer([]); setNextCursor(null); setError('')
@@ -28,6 +28,7 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
     return () => { active = false }
   }, [storeId, query])
   const onlineSearch = async (cursor: string | null = null) => {
+    if (!query.trim()) { setError('Type a name or phone number to search online.'); return }
     setSearching(true); setError('')
     try {
       const result = await searchServerCustomers(storeId, query, terminal, cursor)
@@ -54,7 +55,7 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
   const matches = [...local, ...server.filter(remote => !local.some(customer => customer.id === remote.id))]
   return <div className="crm-finder">
     <section className="crm-panel" aria-labelledby="crm-search-title"><h2 id="crm-search-title">Find a customer</h2>
-      <p>Search by name or phone number (with country code), or leave it blank to browse every customer saved on this store.</p>
+      <p>Search by name or phone number (with country code). Leaving it blank lists every customer saved on this browser, but "Search online" requires a name or phone to look up.</p>
       <label>Name or phone<input type="text" autoComplete="off" placeholder="Jane Doe or +923001234567" value={query} onChange={event => { setQuery(event.target.value); setMessage('') }} /></label>
       <button type="button" className="secondary-cta" disabled={searching || !navigator.onLine} onClick={() => void onlineSearch()}>{searching ? 'Searching…' : 'Search online'}</button>
       <div className="crm-results" role="region" aria-live="polite" aria-label="Customer matches">
@@ -66,7 +67,7 @@ export function CustomerFinder({ storeId, terminal, onSelect }: { storeId: strin
     <section className="crm-panel" aria-labelledby="crm-create-title"><h2 id="crm-create-title">Create customer</h2>
       <p>A name is required. Phone is optional; when supplied, include an explicit country code.</p>
       <form onSubmit={event => void create(event)}><label>Customer name<input value={name} onChange={event => setName(event.target.value)} required aria-invalid={Boolean(nameError)} aria-describedby="customer-name-limit" autoComplete="name" /></label>
-        <p id="customer-name-limit" className={nameError ? 'form-notice error' : 'customer-name-count'} role={nameError ? 'alert' : undefined}>{nameError || `${normalizedName.length} / 30 characters`}</p>
+        <p id="customer-name-limit" className={nameError ? 'form-notice error' : 'customer-name-count'} role={nameError ? 'alert' : undefined}>{nameError || `${normalizedName.length} / 160 characters`}</p>
         <label>Phone with country code (optional)<input type="tel" inputMode="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+923001234567" autoComplete="tel" /></label>
         <button type="submit" className="cta" disabled={busy || !normalizedName || Boolean(nameError)}>{busy ? 'Saving…' : 'Save customer'}</button></form>
       {message && <p className="form-notice" role="status">{message}</p>}
@@ -132,7 +133,7 @@ export function CustomerScreen({ terminal = false }: { terminal?: boolean }) {
     void load(); return () => { active = false }
   }, [terminal])
   return <section className="crm-page"><p className="kicker">{terminal ? 'CASHIER CHECKOUT' : 'STORE MANAGEMENT'}</p><h1>Customers</h1>
-    <p>Search or create customers for this store. Duplicate phone numbers remain separate records.</p>
+    <p>Search or create customers for this store. Each phone number can belong to only one customer.</p>
     {error && <p className="form-notice error" role="alert">{error}</p>}
     {!storeId && !error && <p role="status">Checking customer access…</p>}
     {storeId && <CustomerFinder storeId={storeId} terminal={terminal} onSelect={terminal ? customer => { selectCustomer(customer); navigate('/pos/register') } : undefined} />}

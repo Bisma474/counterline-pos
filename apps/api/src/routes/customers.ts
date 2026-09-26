@@ -135,6 +135,13 @@ async function push(req: Request, res: Response, terminal = false) {
           accepted_checkpoint: cp.rows[0]?.pos ?? '0' })
         return
       }
+      if (input.customer.phone) {
+        const duplicate = await client.query<{ id: string }>(
+          'select id from public.pos_customers where store_id=$1 and phone_normalized=$2',
+          [storeId, input.customer.phone]
+        )
+        if (duplicate.rows[0]) throw new ApiError(409, 'duplicate_phone', 'A customer with this phone number already exists.')
+      }
       await client.query(`insert into public.pos_customers(id,store_id,name,phone_normalized,client_generated_at)
         values ($1,$2,$3,$4,$5)`, [input.customer.id, storeId, input.customer.name, input.customer.phone, input.customer.generatedAt])
       const position = (BigInt((await client.query('select last_position::text from public.pos_sync_feed_state where store_id=$1', [storeId])).rows[0].last_position) + 1n).toString()
@@ -150,6 +157,8 @@ async function push(req: Request, res: Response, terminal = false) {
     } catch (reason) {
       await client.query('rollback')
       if (typeof reason === 'object' && reason !== null && 'code' in reason && reason.code === '23505') {
+        const constraint = 'constraint' in reason ? reason.constraint : undefined
+        if (constraint === 'pos_customers_phone_unique') throw new ApiError(409, 'duplicate_phone', 'A customer with this phone number already exists.')
         throw new ApiError(409, 'customer_id_conflict', 'A customer or operation already uses this identity.')
       }
       throw reason

@@ -4,6 +4,11 @@ import { posDb, type LocalCustomer, type OutboxEntry } from './db'
 export async function createLocalCustomer(storeId: string, rawName: string, rawPhone: string): Promise<LocalCustomer> {
   const name = customerName(rawName), phone = normalizedPhone(rawPhone)
   if (!storeId) throw new Error('Select a store before creating a customer.')
+  if (phone) {
+    const duplicate = await posDb.customers.where('store_id').equals(storeId)
+      .and(customer => customer.phone_normalized === phone && customer.sync_status !== 'failed').first()
+    if (duplicate) throw new Error('This phone number is already saved for another customer.')
+  }
   const id = crypto.randomUUID(), operationId = crypto.randomUUID(), now = new Date().toISOString()
   const customer: LocalCustomer = { id, store_id: storeId, name, phone_normalized: phone,
     client_generated_at: now, creating_operation_id: operationId, sync_status: 'pending', failure_reason: null }
