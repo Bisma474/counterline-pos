@@ -28,11 +28,13 @@ export function PaymentScreen({ terminal = false }: { terminal?: boolean }) {
   useEffect(() => { if (storeId) void posDb.store_config.get(storeId).then(config => { if (config) setCurrency(config.currency) }) }, [storeId])
   useEffect(() => { if (terminal) void readTerminal().then(cache => { setEmployeeId(cache?.session?.employee_id ?? null); setEmployeeLoaded(true) }) }, [terminal])
   let total = 0
+  let cartError = ''
   let amountError = ''
-  try { total = totals().totalCents } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Sale amount is invalid.' }
+  try { total = totals().totalCents } catch (reason) { cartError = reason instanceof Error ? reason.message : 'Sale amount is invalid.' }
   let tender = 0
   if (method === 'card') tender = total
   else if (received.trim()) { try { tender = parseCents(received) } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Invalid cash amount.' } }
+  amountError = cartError || amountError
   const change = tender >= total ? tender - total : 0
   const canComplete = items.length > 0 && Boolean(storeId) && !amountError && !busy && employeeLoaded &&
     (method === 'cash' ? tender >= total : cardConfirmed)
