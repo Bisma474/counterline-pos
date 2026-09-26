@@ -22,6 +22,7 @@ test('ordinary products and variants share checkout while preserving independent
     const name=variantName('T-Shirt',variantOptions({Size:'Small',Color:'Black'}))
     const product={id:'small',store_id:'store',name,sku:'SMALL',barcode:'991001',unit_price_cents:1200,active:true,revision:1,parent_product_id:'parent',parent_name:'T-Shirt',option_values:{Size:'Small',Color:'Black'},is_draft:false,category_id:null,tax_rate_id:null}
     await posDb.products.bulkPut([product,{...product,id:'large',sku:'LARGE',barcode:'991002',name:variantName('T-Shirt',{Size:'Large',Color:'White'}),unit_price_cents:1500,option_values:{Size:'Large',Color:'White'}}])
+    await posDb.server_stock.bulkPut([{product_id:'small',current_stock:1000,updated_at:'2026-09-15T09:00:00.000Z'},{product_id:'large',current_stock:1000,updated_at:'2026-09-15T09:00:00.000Z'},{product_id:'ordinary',current_stock:1000,updated_at:'2026-09-15T09:00:00.000Z'}])
     const item:CartItem={storeId:'store',productId:'small',parentProductId:'parent',name,sku:'SMALL',unitPriceCents:1200,taxRateBps:0,catalogVersion:1,quantity:1}
     await completeLocalSale([item],'store','cash',1200,null)
     await completeLocalSale([{...item,productId:'large',name:'T-Shirt — Size: Large / Color: White',sku:'LARGE',unitPriceCents:1500}],'store','cash',1500,null)

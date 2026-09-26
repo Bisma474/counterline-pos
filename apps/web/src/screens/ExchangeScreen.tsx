@@ -15,7 +15,7 @@
  * selection — none of which apply here, and importing it would risk cross-contaminating an
  * in-progress register sale. This picker sources from the same Dexie tables, read-only.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { calculateDiscountedLine, formatCents, parseCents, sumDiscountedLines } from '../../../../packages/domain/src/money'
 import { completeLocalExchange, completeLocalTerminalExchange, type ExchangeReturnItem } from '../lib/checkout'
@@ -33,6 +33,7 @@ export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
   const { orderId = '' } = useParams()
   const navigate = useNavigate()
   const scope = useReceiptStore(terminal)
+  const inProgress = useRef(false)
 
   const [receipt, setReceipt] = useState<SavedReceipt | null>()
   const [loadError, setLoadError] = useState('')
@@ -166,8 +167,9 @@ export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
   }
 
   const submit = async () => {
-    if (!canSubmit || !receipt) return
+    if (!canSubmit || !receipt || inProgress.current) return
     if (terminal) { setApprovalOpen(true); return }
+    inProgress.current = true
     setBusy(true); setError('')
     try {
       const returnItems: ExchangeReturnItem[] = Object.entries(returnSelected).map(([orderItemId, quantity]) => ({ orderItemId, quantity }))
@@ -176,7 +178,7 @@ export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The exchange could not be completed.')
     } finally {
-      setBusy(false)
+      inProgress.current = false; setBusy(false)
     }
   }
 
@@ -185,7 +187,8 @@ export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
   // terminal-cookie-authenticated endpoint instead of a web bearer token.
   const submitTerminal = async (evidence: ManagerApprovalEvidence) => {
     setApprovalOpen(false)
-    if (!canSubmit || !receipt) return
+    if (!canSubmit || !receipt || inProgress.current) return
+    inProgress.current = true
     setBusy(true); setError('')
     try {
       const returnItems: ExchangeReturnItem[] = Object.entries(returnSelected).map(([orderItemId, quantity]) => ({ orderItemId, quantity }))
@@ -194,7 +197,7 @@ export function ExchangeScreen({ terminal = false }: { terminal?: boolean }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The exchange could not be completed.')
     } finally {
-      setBusy(false)
+      inProgress.current = false; setBusy(false)
     }
   }
 

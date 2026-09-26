@@ -19,6 +19,7 @@ test('cash checkout commits the receipt, sale, payment, stock overlay and outbox
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, null, 'employee-1')
   assert.match(sale.receiptNumber, /^LOCAL-[0-9A-F-]{36}-000001$/)
   const order = await posDb.orders.get(sale.operationId)
@@ -39,6 +40,7 @@ test('a failed outbox write rolls back the sale and receipt sequence', async () 
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const originalAdd = posDb.outbox.add
   posDb.outbox.add = () => Dexie.Promise.reject(new Error('simulated storage failure'))
   try {
@@ -58,6 +60,7 @@ test('checkout refuses a cart carried over from another store', async () => {
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   await assert.rejects(completeLocalSale([{ ...cart[0], storeId: 'other-store' }], storeId, 'cash', 500, null), /another store/)
   assert.equal(await posDb.orders.count(), 0)
   assert.equal(await posDb.outbox.count(), 0)
@@ -69,6 +72,7 @@ test('accepted push marks the order and outbox synced and covers local stock exa
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null)
   const send = async (entry: { operation_id: string }) => ({ ok: true, status: 200,
     body: { status: 'accepted', operation_id: entry.operation_id, accepted_checkpoint: '5' } })
@@ -85,6 +89,7 @@ test('rejected push preserves the paid sale for review but rolls back its stock 
   await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC',
     currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null)
   assert.equal((await posDb.stock_adjustments.get([sale.operationId, productId]))?.delta, -2)
   const send = async () => ({ ok: false, status: 422, body: { code: 'total_mismatch', message: 'Sale needs review.' } })
@@ -126,6 +131,7 @@ test('an existing browser database upgrades queued orders with their store scope
 test('offline customer creation and attached sale survive reload; dependency uploads first', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const customer = await createLocalCustomer(storeId, '  Ada   North  ', '+92 300 1234567')
   assert.equal(customer.name, 'Ada North')
   assert.equal(customer.phone_normalized, '923001234567')
@@ -151,6 +157,7 @@ test('offline customer creation and attached sale survive reload; dependency upl
 test('a permanently rejected customer upload does not block the dependent paid order from syncing', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const customer = await createLocalCustomer(storeId, 'Bea South', '+923001234567')
   const sale = await completeLocalSale(cart, storeId, 'cash', 500, null, customer.id)
   const sent: string[] = []
@@ -172,6 +179,7 @@ test('a permanently rejected customer upload does not block the dependent paid o
 test('a cashier-level discount (20% or less) completes without manager approval and is snapshotted on the order item', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 1_000 } }]
   const sale = await completeLocalSale(discounted, storeId, 'cash', 500, null)
   const order = await posDb.orders.get(sale.operationId)
@@ -188,6 +196,7 @@ test('a cashier-level discount (20% or less) completes without manager approval 
 test('a discount above 20% is refused without manager evidence and accepted with it', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const discounted: CartItem[] = [{ ...cart[0], discount: { kind: 'percent', bps: 2_500 } }]
   await assert.rejects(completeLocalSale(discounted, storeId, 'cash', 500, null), /manager approval/)
   assert.equal(await posDb.orders.count(), 0)
@@ -201,6 +210,7 @@ test('a discount above 20% is refused without manager evidence and accepted with
 test('duplicate normalized phones stay separate and checkout rejects cross-store customer', async () => {
   await posDb.delete(); await posDb.open()
   await posDb.store_config.put({ id: storeId, store_id: storeId, name: 'Test store', timezone: 'UTC', currency: 'USD', catalog_version: 1 })
+  await posDb.server_stock.put({ product_id: productId, current_stock: 1000, updated_at: '2026-09-15T09:00:00.000Z' })
   const first = await createLocalCustomer(storeId, 'One', '+923001234567')
   const second = await createLocalCustomer(storeId, 'Two', '+92 300 1234567')
   assert.notEqual(first.id, second.id)

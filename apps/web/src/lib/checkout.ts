@@ -24,12 +24,16 @@ export async function completeLocalSale(items: CartItem[], storeId: string, meth
   const now = new Date().toISOString()
   let receiptNumber = ''
   await posDb.transaction('rw', [posDb.orders, posDb.order_items, posDb.payments,
-    posDb.outbox, posDb.stock_adjustments, posDb.sync_metadata, posDb.products], async () => {
+    posDb.outbox, posDb.stock_adjustments, posDb.sync_metadata, posDb.products, posDb.server_stock], async () => {
       for (const item of items) {
         const product = await posDb.products.get(item.productId)
         if ((item.parentProductId && !product) || (product && (product.store_id !== storeId || !product.active || product.is_draft))) {
           throw new Error(`${item.name} is no longer available for sale. Remove it from the cart and refresh the catalog.`)
         }
+        const serverStock = await posDb.server_stock.get(item.productId)
+        const adjustments = await posDb.stock_adjustments.where('product_id').equals(item.productId).toArray()
+        const available = (serverStock?.current_stock ?? 0) + adjustments.reduce((sum, adjustment) => sum + adjustment.delta, 0)
+        if (item.quantity > available) throw new Error(`Only ${Math.max(0, available)} of ${item.name} left in stock. Reduce the quantity and try again.`)
       }
       const prefixRow = await posDb.sync_metadata.get(`receipt_prefix:${storeId}`)
       const prefix = prefixRow?.value ?? `LOCAL-${crypto.randomUUID().toUpperCase()}-`

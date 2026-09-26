@@ -186,12 +186,25 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
   const approvalValid = terminal ? approvalIsCurrent(managerApproval, cart, permissionVersion) : true
   const needsApproval = terminal && approvalNeededIds.length > 0 && !approvalValid
 
+  function cartQuantity(productId: string) {
+    return cart.find(item => item.productId === productId)?.quantity ?? 0
+  }
+
   function addProductToCart(product: LocalProduct) {
     if (!product.active || product.is_draft) { setError('This variant is not available for sale.'); return }
     if (product.tax_rate_id && taxRates[product.tax_rate_id] === undefined) { setError(`${product.name} needs a tax rate that has not synced to this browser yet.`); return }
+    const available = stock[product.id] ?? 0
+    if (cartQuantity(product.id) + 1 > available) { setError(`Only ${available} of ${product.name} left in stock.`); return }
     setError('')
     addItem({ storeId, productId: product.id, parentProductId: product.parent_product_id, name: product.name, sku: product.sku,
       unitPriceCents: product.unit_price_cents, taxRateBps: taxRates[product.tax_rate_id ?? ''] ?? 0, catalogVersion })
+  }
+
+  function incrementCartItem(item: CartItem) {
+    const available = stock[item.productId] ?? 0
+    if (item.quantity + 1 > available) { setError(`Only ${available} of ${item.name} left in stock.`); return }
+    setError('')
+    increment(item.productId)
   }
 
   function handleScan() {
@@ -264,7 +277,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
       </div>}
       {!loading && !error && !visible.length && <p className="screen-note">{products.length ? 'No products match your search.' : 'No catalog saved. Connect to load this store’s products.'}</p>}
       <div className="catalog-grid">{cards.map(product => <button type="button" className="catalog-card" key={product.id}
-        disabled={Boolean(product.tax_rate_id && taxRates[product.tax_rate_id] === undefined)}
+        disabled={Boolean(product.tax_rate_id && taxRates[product.tax_rate_id] === undefined) || (!product.parent_product_id && cartQuantity(product.id) >= (stock[product.id] ?? 0))}
         onClick={event => { if(product.parent_product_id) { variantTrigger.current=event.currentTarget;setVariantParent(product.parent_product_id) } else addProductToCart(product) }}>
         {product.image_url ? <img className="product-art-img" src={product.image_url} alt="" aria-hidden="true" /> : <div className="product-art" aria-hidden="true" />}<strong>{product.parent_name || product.name}</strong>
         {product.parent_product_id ? <span>{products.filter(row=>row.parent_product_id===product.parent_product_id).length} active variants - choose options</span> : <span>{formatCents(product.unit_price_cents, currency)}</span>}<small>{product.parent_product_id ? 'Stock shown per variant' : `${stock[product.id] ?? 0} in stock · ${product.sku}`}</small>
@@ -280,7 +293,7 @@ export function RegisterScreen({ terminal = false }: { terminal?: boolean }) {
         return <div className="cart-line-wrap" key={item.productId}>
           <div className="cart-line"><span><strong>{item.name}</strong><small>{formatCents(item.unitPriceCents, currency)} each</small></span>
             <div className="quantity"><button type="button" aria-label={`Remove one ${item.name}`} onClick={() => decrement(item.productId)}>−</button><b>{item.quantity}</b>
-              <button type="button" aria-label={`Add one ${item.name}`} onClick={() => increment(item.productId)}>+</button></div>
+              <button type="button" aria-label={`Add one ${item.name}`} disabled={item.quantity >= (stock[item.productId] ?? 0)} onClick={() => incrementCartItem(item)}>+</button></div>
             <button type="button" aria-label={`Remove ${item.name}`} onClick={() => remove(item.productId)}>×</button></div>
           <div className="cart-line-discount-row">
             <button type="button" className={`discount-button ${item.discount ? 'active' : ''}`} onClick={() => openDiscountEditor(item)}>{item.discount ? 'Edit discount' : '% Discount'}</button>
