@@ -64,7 +64,7 @@ export function SyncCenterScreen({ terminal = false }: { terminal?: boolean }) {
     URL.revokeObjectURL(url)
   }
 
-  const counts: Record<SyncState, number> = { pending: 0, in_flight: 0, blocked: 0, rejected: 0, synced: 0 }
+  const counts: Record<SyncState, number> = { pending: 0, in_flight: 0, blocked: 0, rejected: 0, needs_signin: 0, synced: 0 }
   for (const entry of entries ?? []) counts[classifySyncState(entry)]++
   const visible = (entries ?? []).filter(entry => filter === 'all' || classifySyncState(entry) === filter)
   const byOperationId = new Map((entries ?? []).map(entry => [entry.operation_id, entry]))
@@ -75,7 +75,7 @@ export function SyncCenterScreen({ terminal = false }: { terminal?: boolean }) {
       <button type="button" onClick={exportDiagnostics} disabled={!entries?.length}>Export diagnostics (JSON)</button></div>
 
     <div className="history-tools" role="group" aria-label="Filter by sync state">
-      {(['all', 'pending', 'in_flight', 'blocked', 'rejected', 'synced'] as const).map(state => <button key={state} type="button"
+      {(['all', 'pending', 'in_flight', 'blocked', 'rejected', 'needs_signin', 'synced'] as const).map(state => <button key={state} type="button"
         aria-pressed={filter === state} className={filter === state ? 'selected' : ''} onClick={() => setFilter(state)}>
         {state === 'all' ? `All (${entries?.length ?? 0})` : `${SYNC_STATE_LABELS[state]} (${counts[state]})`}
       </button>)}

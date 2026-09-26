@@ -145,14 +145,6 @@
 .delta-badge.down { background: #fee4e2; color: #b42318; }
 .delta-badge.flat { background: #ede6d8; color: #5f5b51; }
 
-/* Subgrid for Tender Split + Sync */
-.dashboard-subgrid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr);
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
 .dashboard-panel {
   background: #fffdf9;
   border: 1px solid #ded6c6;
@@ -193,71 +185,6 @@
   text-decoration: underline;
 }
 
-/* Tender Donut Chart */
-.tender-distribution {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  flex-wrap: wrap;
-}
-
-.tender-donut {
-  width: 110px;
-  height: 110px;
-  flex-shrink: 0;
-}
-
-.tender-donut circle {
-  transition: stroke-dasharray 0.3s ease;
-}
-
-.donut-pct {
-  font: 800 16px 'DM Serif Display', Georgia, serif;
-  fill: #17201f;
-}
-
-.donut-label {
-  font: 700 8px system-ui, sans-serif;
-  fill: #726e64;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.tender-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1;
-  min-width: 160px;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #43403a;
-}
-
-.legend-item strong {
-  color: #17201f;
-  margin-left: 2px;
-}
-
-.legend-item small {
-  color: #726e64;
-}
-
-.dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.dot-cash { background: #238b55; }
-.dot-card { background: #e2712a; }
-
 /* Unresolved Sync Panel */
 .unresolved-panel {
   padding: 18px 20px;
@@ -272,6 +199,10 @@
 
 .unresolved-panel > div:first-child {
   grid-column: 1 / -1;
+}
+
+.dashboard-sync-panel {
+  margin-bottom: 20px;
 }
 
 .unresolved-panel h2 {
@@ -323,6 +254,12 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 20px;
+}
+
+/* Variant for a 3-panel row (Top products / Stock alerts / Oversold products) — the plain
+   2-column .dashboard-columns would leave the third panel alone with an empty gap beside it. */
+.dashboard-columns-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 /* Ranked products list */
@@ -655,6 +592,22 @@
   background: #f9f5eb;
   border-radius: 8px;
   overflow: hidden;
+  margin-bottom: 20px;
+}
+
+/* Used for the supporting breakdown under the KPI cards (gross/discounts/tax) — lighter and
+   tighter than the old full report-metrics table, since the headline numbers now live above it. */
+.report-metrics-compact .report-line {
+  padding: 12px 20px;
+}
+
+.report-metrics-compact .report-line strong {
+  font-size: 12px;
+}
+
+.report-metrics-compact .report-line b {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .report-line {
@@ -736,6 +689,7 @@
 .sync-chip.in_flight { background: #d6e6f5; color: #1d4e80; }
 .sync-chip.blocked { background: #eadcf5; color: #5c3487; }
 .sync-chip.rejected { background: #f8d5cc; color: #9c3022; }
+.sync-chip.needs_signin { background: #fbe3a8; color: #7a5416; }
 .sync-center-link { display: inline-block; margin-top: 14px; }
 
 /* Activity log */
@@ -798,6 +752,84 @@
   font: inherit;
 }
 
+/* Report range toggle (Day / Week / Month) */
+.range-toggle {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid #dcd4c3;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.range-toggle button {
+  border: 0;
+  background: #ede6d8;
+  color: #24352b;
+  font: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.range-toggle button + button {
+  border-left: 1px solid #dcd4c3;
+}
+
+.range-toggle button.active {
+  background: var(--coral, #ec6b24);
+  color: #fff;
+}
+
+/* Sales trend bar chart */
+.trend-chart-panel {
+  margin-bottom: 20px;
+}
+
+.trend-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 160px;
+  padding-top: 8px;
+}
+
+.trend-bar-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.trend-bar-track {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: 100%;
+}
+
+.trend-bar {
+  width: 100%;
+  min-height: 0;
+  background: var(--coral, #ec6b24);
+  border-radius: 4px 4px 0 0;
+  transition: height 0.2s ease;
+}
+
+.trend-bar-label {
+  font-size: 10px;
+  color: #726e64;
+  white-space: nowrap;
+}
+
+.trend-empty {
+  padding: 20px 0;
+}
+
 /* Skeleton loading states — CSS-only shimmer, no new dependency. */
 @keyframes skeleton-shimmer {
   0% { background-position: -200px 0; }
@@ -829,6 +861,11 @@
   height: 220px;
 }
 
+.skeleton-chart {
+  height: 200px;
+  margin-bottom: 20px;
+}
+
 .skeleton-line-row {
   height: 58px;
   border-radius: 0;
@@ -850,6 +887,7 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .export-csv-btn {
@@ -862,7 +900,7 @@
   .report-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .dashboard-subgrid, .dashboard-columns {
+  .dashboard-columns {
     grid-template-columns: 1fr;
   }
   .cashier-actions-bar {
@@ -896,6 +934,12 @@
   .export-csv-btn {
     justify-content: center;
   }
+  .range-toggle button {
+    flex: 1;
+  }
+  .trend-chart {
+    height: 120px;
+  }
 }
 
 @media (max-width: 390px) {
@@ -909,14 +953,6 @@
     padding: 14px;
   }
   .day-picker input {
-    width: 100%;
-    min-width: 0;
-  }
-  .tender-distribution {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .tender-legend {
     width: 100%;
     min-width: 0;
   }

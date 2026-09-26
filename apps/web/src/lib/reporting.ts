@@ -145,6 +145,34 @@ export function calculateLocalSalesReport(storeId: string, day: string, timezone
   return report
 }
 
+// Sums a set of single-day reports into one range total. averageSaleCents is recomputed from the
+// summed recordedTotal/orderCount rather than averaging each day's own average — a deliberate
+// simplification for a multi-day range (the single-day formula's pre-refund weighting doesn't
+// carry over cleanly across days), and this never runs for the single-day case, which still uses
+// calculateLocalSalesReport's own averageSaleCents untouched.
+export function sumReports(reports: LocalSalesReport[]): LocalSalesReport {
+  const total = emptyReport()
+  for (const report of reports) {
+    total.grossSalesCents += report.grossSalesCents
+    total.discountCents += report.discountCents
+    total.netSalesCents += report.netSalesCents
+    total.taxCents += report.taxCents
+    total.cashTakingsCents += report.cashTakingsCents
+    total.cardTakingsCents += report.cardTakingsCents
+    total.recordedTotalCents += report.recordedTotalCents
+    total.completedOrderCount += report.completedOrderCount
+    total.itemsSold += report.itemsSold
+    total.pendingCount += report.pendingCount
+    total.pendingAmountCents += report.pendingAmountCents
+    total.rejectedCount += report.rejectedCount
+    total.rejectedAmountCents += report.rejectedAmountCents
+    total.refundedCount += report.refundedCount
+    total.refundedAmountCents += report.refundedAmountCents
+  }
+  total.averageSaleCents = total.completedOrderCount ? Math.round(total.recordedTotalCents / total.completedOrderCount) : 0
+  return total
+}
+
 export interface TopProduct {
   productId: string
   name: string
