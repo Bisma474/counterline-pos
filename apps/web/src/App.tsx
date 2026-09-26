@@ -32,7 +32,7 @@ const ManagerSetup = lazy(() => import('./terminal-auth/ManagerSetup').then(modu
 const StoreDetails = lazy(() => import('./screens/StoreDetails').then(module => ({ default: module.StoreDetails })))
 
 const products = [['Ceramic Mug', '$18.00', '24 in stock', 'mug'], ['Canvas Tote', '$32.00', '12 in stock', 'tote'], ['Scented Candle', '$28.00', '4 in stock', 'candle'], ['Hand Soap', '$20.00', '18 in stock', 'soap'], ['Olive Oil', '$22.00', '14 in stock', 'oil'], ['Tea Blend', '$16.00', '30 in stock', 'tea'], ['Wool Scarf', '$48.00', '5 in stock', 'scarf'], ['T-Shirt', '$36.00', '9 in stock', 'shirt']] as const
-const nav = [['⌂', 'Dashboard', '/dashboard'], ['⌁', 'Sell', '/register'], ['▦', 'Products', '/products'], ['▤', 'Orders', '/orders'], ['♧', 'Customers', '/customers'], ['▥', 'Reports', '/reports'], ['⚙', 'Settings', '/settings'], ['▧', 'Inventory', '/inventory']] as const
+const nav = [['⌂', 'Dashboard', '/dashboard'], ['⌁', 'Sell', '/register'], ['▦', 'Products', '/products'], ['▤', 'Orders', '/orders'], ['♧', 'Customers', '/customers'], ['▥', 'Reports', '/reports'], ['▧', 'Inventory', '/inventory'], ['⚙', 'Settings', '/settings']] as const
 function Mark() { return <span aria-hidden="true" className="leaf-mark">⌁</span> }
 function Brand({ dark = false }: { dark?: boolean }) { return <Link className={`brand ${dark ? 'brand-dark' : ''}`} to="/"><Mark />Counterline <small>FOR INDEPENDENT RETAIL</small></Link> }
 function Button({ children, to, disabled = false, type = 'button', onClick }: { children: ReactNode, to?: string, disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void }) { return to ? <Link className="cta" to={to}>{children}<b aria-hidden="true">→</b></Link> : <button className="cta" type={type} disabled={disabled} onClick={onClick}>{children}<b aria-hidden="true">→</b></button> }
@@ -106,10 +106,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // Mobile bottom bar is a fixed 5-column grid (styles.css); keep exactly 5 items here
   // (Dashboard, Sell, Products, Orders, Settings) or the 6th wraps onto its own row.
   // Customers stays reachable from the sidebar on larger screens.
-  const mobileNav = [nav[0], nav[1], nav[2], nav[3], nav[6]]
+  const mobileNav = [nav[0], nav[1], nav[2], nav[3], nav[7]]
   const go = useNavigate()
   const [signingOut, setSigningOut] = useState(false)
-  const [canReport, setCanReport] = useState<boolean>()
+  // Starts optimistic (true) rather than undefined so Reports doesn't flash out of the sidebar
+  // on every route change while resolveFinancialAccess re-resolves (AppLayout remounts per route);
+  // it still hides for cashiers once the check resolves false.
+  const [canReport, setCanReport] = useState<boolean>(true)
   const [identity, setIdentity] = useState<CurrentIdentity>()
   const terminal = useTerminalStatus()
   useEffect(() => {
